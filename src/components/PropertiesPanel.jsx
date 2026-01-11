@@ -1,3 +1,4 @@
+import React, { memo } from 'react';
 import {
   BoxSelect,
   Circle,
@@ -9,8 +10,9 @@ import {
   Target,
   Trash2
 } from 'lucide-react';
+import { SEGMENT_MODES } from '../lib/editorConstants';
 
-export default function PropertiesPanel({
+function PropertiesPanel({
   isDark,
   activeVideo,
   selectedCount,
@@ -384,6 +386,21 @@ export default function PropertiesPanel({
               <div className="text-[10px] text-slate-400">1px (фіксована)</div>
             </div>
           )}
+          <div className="space-y-2 pt-2 border-t">
+            <label className="text-xs font-bold opacity-70 block">Канал</label>
+            <select
+              value={selectedElement.channelMode || 'all'}
+              onChange={e => updateElement(selectedElement.id, { channelMode: e.target.value })}
+              className={`w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'}`}
+            >
+              <option value="all">Всі</option>
+              {SEGMENT_MODES.map(mode => (
+                <option key={mode.id} value={mode.id}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       ) : (
         <div className={`p-8 text-center text-xs border border-dashed rounded-xl ${isDark ? 'border-slate-700 bg-slate-800 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-400'}`}>
@@ -393,3 +410,5 @@ export default function PropertiesPanel({
     </div>
   );
 }
+
+export default memo(PropertiesPanel);

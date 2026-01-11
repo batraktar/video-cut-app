@@ -8,6 +8,7 @@ import {
 import {
   buildChannelsFromEntries,
   clamp,
+  entriesHaveBoth,
   extractFfmpegTime,
   getEntryOrder,
   getExportDurationForEdit,
@@ -993,6 +994,7 @@ export default function useAdmin({
       const normalizedName = normalizeName(fileInfo.name);
       const sheetEntries = sheetMap?.get(normalizedName) || [];
       const hasSheetEntry = sheetEntries.length > 0;
+      const sheetHasBoth = hasSheetEntry && entriesHaveBoth(sheetEntries);
 
       if (hasSheetEntry) inSheetCount += 1;
       else unmatched.push(fileInfo.name);
@@ -1012,7 +1014,7 @@ export default function useAdmin({
       if (existingItem) {
         const merged = mergeChannelLists(existingItem.channels, channels);
         if (merged.length > 0 && merged.length !== (existingItem.channels || []).length) {
-          const updated = { ...existingItem, channels: merged };
+          const updated = { ...existingItem, channels: merged, sheetHasBoth: existingItem.sheetHasBoth || sheetHasBoth };
           existingByFileKey.set(fileKey, updated);
           mergedUpdates.push(updated);
         }
@@ -1038,6 +1040,7 @@ export default function useAdmin({
         sheetMode: '',
         sheetCameraType: '',
         sheetStatus: '',
+        sheetHasBoth,
         channels,
         source: 'server',
         sourcePath: fileInfo.relativePath,

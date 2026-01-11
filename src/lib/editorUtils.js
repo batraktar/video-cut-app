@@ -57,6 +57,18 @@ export const parseNumericInput = value => {
 
 export const normalizeName = value => String(value || '').trim().toLowerCase();
 
+export const isElementForMode = (element, mode) => {
+  if (!element) return false;
+  const target = normalizeName(element.channelMode);
+  if (!target || target === 'all') return true;
+  const desired = normalizeName(mode);
+  if (!desired) return false;
+  return target === desired;
+};
+
+export const filterElementsForMode = (elements, mode) =>
+  (Array.isArray(elements) ? elements : []).filter(el => isElementForMode(el, mode));
+
 export const parseCsv = text => {
   const rows = [];
   let row = [];
@@ -96,6 +108,18 @@ export const parseCsv = text => {
 };
 
 export const getFileKey = file => `${file.name}|${file.size}|${file.lastModified}`;
+
+export const hasBothValue = value => normalizeName(value).includes('both');
+
+export const entriesHaveBoth = entries =>
+  Array.isArray(entries) &&
+  entries.some(
+    entry =>
+      entry &&
+      (hasBothValue(entry.analogDigital) ||
+        hasBothValue(entry.cameraType) ||
+        hasBothValue(entry.status))
+  );
 
 export const getFileKeyCounts = list => {
   const counts = new Map();

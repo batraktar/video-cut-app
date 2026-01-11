@@ -11,6 +11,8 @@ import {
 import {
   buildChannelsFromEntries,
   clamp,
+  entriesHaveBoth,
+  filterElementsForMode,
   getDefaultSegmentSets,
   getEntryOrder,
   getFileKey,
@@ -162,6 +164,11 @@ export default function App() {
   const startState = useRef(null);
   const dragRafRef = useRef(null);
   const dragPendingRef = useRef(null);
+  const elementPreviewRef = useRef(new Map());
+  const segmentPreviewRef = useRef(new Map());
+  const trimPreviewRef = useRef(null);
+  const cropPreviewRef = useRef(null);
+  const lastDragTimeRef = useRef(0);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -690,6 +697,7 @@ export default function App() {
     segments.reduce((sum, seg) => sum + Math.max(0, (seg.end ?? 0) - (seg.start ?? 0)), 0);
 
   const showHud = text => {
+    if (isDragging.current) return;
     setHudText(text);
     if (hudTimeoutRef.current) clearTimeout(hudTimeoutRef.current);
     hudTimeoutRef.current = setTimeout(() => setHudText(null), 1000);
@@ -937,7 +945,8 @@ export default function App() {
     if (!video || !edit) return { lines: [], usesTemp: false, error: 'missing' };
     const meta = edit.meta || {};
     const crop = edit.crop || DEFAULT_EDIT_STATE.crop;
-    const elements = Array.isArray(edit.elements) ? edit.elements : [];
+    const segmentMode = options.segmentMode || getSegmentModeForVideo(video);
+    const elements = filterElementsForMode(edit.elements, segmentMode);
     const hasCrop = !!(crop.t || crop.b || crop.l || crop.r);
     const hasElements = elements.length > 0;
     const hasFilters = hasCrop || hasElements;
@@ -945,7 +954,6 @@ export default function App() {
       Number.isFinite(meta.duration) && meta.duration > 0 ? meta.duration : null;
     const clampTime = val =>
       safeDuration ? clamp(val, 0, safeDuration) : Math.max(0, val);
-    const segmentMode = options.segmentMode || getSegmentModeForVideo(video);
     const modeSegments = getSegmentsForMode(edit, segmentMode);
     const baseSegments =
       Array.isArray(modeSegments) && modeSegments.length > 0
@@ -1483,6 +1491,64 @@ export default function App() {
     setSegmentDraft({ start: null, end: null });
   }, [currentId]);
 
+  useEffect(() => {
+    elementPreviewRef.current.clear();
+  }, [currentId]);
+
+  const fileKeySegmentModes = useMemo(() => {
+    const map = new Map();
+    playlist.forEach(video => {
+      if (!video?.fileKey) return;
+      const modes = Array.isArray(video.channels) && video.channels.length > 0
+        ? video.channels.map(channel => channel.mode).filter(Boolean)
+        : [getSegmentModeForVideo(video)];
+      if (!map.has(video.fileKey)) map.set(video.fileKey, new Set());
+      const set = map.get(video.fileKey);
+      modes.forEach(mode => {
+        if (mode) set.add(mode);
+      });
+    });
+    return map;
+  }, [playlist]);
+  const activeSegmentModes = useMemo(() => {
+    const fallback = getSegmentModeForVideo(activeVideo) || 'digital';
+    if (!activeVideo?.fileKey) return [fallback];
+    const set = fileKeySegmentModes.get(activeVideo.fileKey);
+    if (!set || set.size === 0) return [fallback];
+    return SEGMENT_MODES.map(mode => mode.id).filter(id => set.has(id));
+  }, [activeVideo?.fileKey, activeVideo?.id, fileKeySegmentModes]);
+  const activeSegmentModesMeta = useMemo(
+    () => activeSegmentModes.map(id => SEGMENT_MODES.find(mode => mode.id === id)).filter(Boolean),
+    [activeSegmentModes]
+  );
+  const activeSegmentMode = getActiveSegmentMode(activeSegmentModes);
+  const activeSegmentMeta =
+    SEGMENT_MODES.find(mode => mode.id === activeSegmentMode) || SEGMENT_MODES[0];
+  const activeChannelChips = useMemo(
+    () => buildChannelSuffixChips(activeVideo),
+    [activeVideo, currentEdit.segmentMode]
+  );
+  const activeSegments = getSegmentsForMode(currentEdit, activeSegmentMode);
+  const visibleElements = useMemo(
+    () => filterElementsForMode(currentEdit.elements, activeSegmentMode),
+    [currentEdit.elements, activeSegmentMode]
+  );
+  const activeSegmentModesKey = activeSegmentModes.join('|');
+  const allSegmentsByMode = useMemo(
+    () =>
+      activeSegmentModesMeta.map(mode => ({
+        meta: mode,
+        segments: getSegmentsForMode(currentEdit, mode.id)
+      })),
+    [currentEdit.segmentSets, activeSegmentModesKey]
+  );
+  useEffect(() => {
+    if (!activeSegmentModes.length) return;
+    if (currentEdit.segmentMode && activeSegmentModes.includes(currentEdit.segmentMode)) return;
+    setActiveSegmentMode(activeSegmentModes[0]);
+  }, [activeSegmentModesKey, currentId]);
+
+
   // --- KEYBOARD LISTENERS ---
   useEffect(() => {
     const handleKeyDown = e => {
@@ -1557,6 +1623,28 @@ export default function App() {
         e.preventDefault();
         addRect();
         showHud("Додано прямокутник");
+        return;
+      }
+      if (key === 'l' || key === 'д' || e.code === 'KeyL') {
+        e.preventDefault();
+        if (!currentEdit.selectedId) {
+          showHud("Спочатку оберіть елемент");
+          return;
+        }
+        const selected = currentEdit.elements.find(el => el.id === currentEdit.selectedId);
+        if (!selected) return;
+        const activeMode =
+          activeSegmentMode || currentEdit.segmentMode || getSegmentModeForVideo(activeVideo) || 'digital';
+        const normalizedActive = normalizeName(activeMode);
+        const currentMode = normalizeName(selected.channelMode);
+        const nextMode = currentMode === normalizedActive ? 'all' : activeMode;
+        updateElement(selected.id, { channelMode: nextMode });
+        if (nextMode === 'all') {
+          showHud("Канал: всі");
+        } else {
+          const label = SEGMENT_MODES.find(mode => mode.id === activeMode)?.label || activeMode;
+          showHud(`Канал: ${label}`);
+        }
         return;
       }
       if (e.code === 'Enter') {
@@ -1677,7 +1765,7 @@ export default function App() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [activeVideo, isPlaying, currentEdit, isProcessing, processingJob, currentId, seekStep]);
+  }, [activeVideo, isPlaying, currentEdit, isProcessing, processingJob, currentId, seekStep, activeSegmentMode]);
 
   useEffect(() => {
     const handlePointerDown = e => {
@@ -1706,6 +1794,7 @@ export default function App() {
       const fileKey = getFileKey(file);
       const normalizedName = normalizeName(file.name);
       const sheetEntries = sheetMap?.get(normalizedName) || [];
+      const sheetHasBoth = sheetEntries.length > 0 && entriesHaveBoth(sheetEntries);
       const entries = sheetEntries.length > 0 ? sheetEntries : [null];
       const orderedEntries = entries
         .map((entry, index) => ({ entry, index }))
@@ -1722,7 +1811,8 @@ export default function App() {
             ...existingItem,
             file,
             url: existingItem.url || URL.createObjectURL(file),
-            channels: mergeChannelLists(existingItem.channels, channels)
+            channels: mergeChannelLists(existingItem.channels, channels),
+            sheetHasBoth: existingItem.sheetHasBoth || sheetHasBoth
           });
         }
         return;
@@ -1746,6 +1836,7 @@ export default function App() {
         sheetMode: '',
         sheetCameraType: '',
         sheetStatus: '',
+        sheetHasBoth,
         channels
       };
       if (existingItem) {
@@ -2151,6 +2242,7 @@ export default function App() {
       color: '#000000',
       isOutline: true,
       thickness: 1,
+      channelMode: 'all',
       startTime: currentTime || 0,
       endTime: meta.duration || 10
     };
@@ -2170,6 +2262,7 @@ export default function App() {
       color: '#000000',
       isOutline: true,
       thickness: 1,
+      channelMode: 'all',
       startTime: currentTime || 0,
       endTime: meta.duration || 10
     };
@@ -2205,7 +2298,8 @@ export default function App() {
       isOutline: el.isOutline,
       thickness: el.thickness,
       startTime: el.startTime,
-      endTime: el.endTime
+      endTime: el.endTime,
+      channelMode: el.channelMode || 'all'
     });
     showHud("Налаштування скопійовано");
   };
@@ -2443,10 +2537,70 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (dragRafRef.current) cancelAnimationFrame(dragRafRef.current);
+      elementPreviewRef.current.clear();
     };
   }, []);
 
   // --- DRAGGING LOGIC ---
+  const applyElementPreview = (id, next) => {
+    const overlay = overlayRef.current;
+    if (!overlay || !id || !next) return;
+    const node = overlay.querySelector(`[data-el-id="${id}"]`);
+    if (!node) return;
+    node.style.left = `${next.x}%`;
+    node.style.top = `${next.y}%`;
+    node.style.width = `${next.w}%`;
+    node.style.height = `${next.h}%`;
+  };
+
+  const applyTrimPreview = (trim, duration) => {
+    if (!timelineRef.current || !duration) return;
+    const pct = val => (val / duration) * 100;
+    const start = Math.max(0, Math.min(100, pct(trim.start || 0)));
+    const end = Math.max(0, Math.min(100, pct(trim.end || duration)));
+    const box = timelineRef.current.querySelector('[data-trim-box]');
+    const maskStart = timelineRef.current.querySelector('[data-trim-start-mask]');
+    const maskEnd = timelineRef.current.querySelector('[data-trim-end-mask]');
+    const handleStart = timelineRef.current.querySelector('[data-trim-start]');
+    const handleEnd = timelineRef.current.querySelector('[data-trim-end]');
+    if (box) {
+      box.style.left = `${start}%`;
+      box.style.right = `${100 - end}%`;
+    }
+    if (maskStart) maskStart.style.width = `${start}%`;
+    if (maskEnd) maskEnd.style.width = `${100 - end}%`;
+    if (handleStart) handleStart.style.left = `${start}%`;
+    if (handleEnd) handleEnd.style.left = `${end}%`;
+  };
+
+  const applyCropPreview = crop => {
+    const overlay = overlayRef.current;
+    if (!overlay) return;
+    const box = overlay.querySelector('[data-crop-box]');
+    const topMask = overlay.querySelector('[data-crop-top]');
+    const bottomMask = overlay.querySelector('[data-crop-bottom]');
+    const leftMask = overlay.querySelector('[data-crop-left]');
+    const rightMask = overlay.querySelector('[data-crop-right]');
+    if (box) {
+      box.style.top = `${crop.t}%`;
+      box.style.bottom = `${crop.b}%`;
+      box.style.left = `${crop.l}%`;
+      box.style.right = `${crop.r}%`;
+    }
+    if (topMask) topMask.style.height = `${crop.t}%`;
+    if (bottomMask) bottomMask.style.height = `${crop.b}%`;
+    if (leftMask) {
+      leftMask.style.top = `${crop.t}%`;
+      leftMask.style.bottom = `${crop.b}%`;
+      leftMask.style.width = `${crop.l}%`;
+    }
+    if (rightMask) {
+      rightMask.style.top = `${crop.t}%`;
+      rightMask.style.bottom = `${crop.b}%`;
+      rightMask.style.width = `${crop.r}%`;
+    }
+  };
+
   useEffect(() => {
     const scheduleDragUpdate = fn => {
       dragPendingRef.current = fn;
@@ -2462,6 +2616,9 @@ export default function App() {
     const handleMouseMove = e => {
       if (!isDragging.current) return;
       e.preventDefault();
+      const now = performance.now();
+      if (now - lastDragTimeRef.current < 12) return;
+      lastDragTimeRef.current = now;
       const target = dragTarget.current;
       if (!target) return;
       const clientX = e.clientX;
@@ -2482,11 +2639,15 @@ export default function App() {
 
           if (target.type === 'trim-start') {
             time = Math.min(time, edit.trim.end - 0.5);
-            updateCurrentEditRef.current({ trim: { ...edit.trim, start: time } });
+            const nextTrim = { ...edit.trim, start: time };
+            trimPreviewRef.current = nextTrim;
+            applyTrimPreview(nextTrim, edit.meta.duration);
             if (videoRef.current) videoRef.current.currentTime = time;
           } else {
             time = Math.max(time, edit.trim.start + 0.5);
-            updateCurrentEditRef.current({ trim: { ...edit.trim, end: time } });
+            const nextTrim = { ...edit.trim, end: time };
+            trimPreviewRef.current = nextTrim;
+            applyTrimPreview(nextTrim, edit.meta.duration);
             if (videoRef.current) videoRef.current.currentTime = time;
           }
           return;
@@ -2505,13 +2666,19 @@ export default function App() {
             let newStart = segStart + deltaTime;
             newStart = clamp(newStart, 0, edit.meta.duration - segLen);
             const newEnd = newStart + segLen;
-            updateSegmentRef.current?.(target.id, { start: newStart, end: newEnd });
+            const nextSeg = { start: newStart, end: newEnd };
+            segmentPreviewRef.current.set(target.id, nextSeg);
+            updateSegmentRef.current?.(target.id, nextSeg, false);
           } else if (target.action === 'resize-start') {
             const newStart = clamp(segStart + deltaTime, 0, segEnd - 0.1);
-            updateSegmentRef.current?.(target.id, { start: newStart, end: segEnd });
+            const nextSeg = { start: newStart, end: segEnd };
+            segmentPreviewRef.current.set(target.id, nextSeg);
+            updateSegmentRef.current?.(target.id, nextSeg, false);
           } else if (target.action === 'resize-end') {
             const newEnd = clamp(segEnd + deltaTime, segStart + 0.1, edit.meta.duration);
-            updateSegmentRef.current?.(target.id, { start: segStart, end: newEnd });
+            const nextSeg = { start: segStart, end: newEnd };
+            segmentPreviewRef.current.set(target.id, nextSeg);
+            updateSegmentRef.current?.(target.id, nextSeg, false);
           }
           return;
         }
@@ -2533,37 +2700,46 @@ export default function App() {
           if (target.type === 'element') {
             const elId = target.id;
             const startEl = startState.current;
+            let nextEl = null;
             if (target.action === 'move') {
-              updateElementRef.current?.(elId, { x: startEl.x + deltaPercX, y: startEl.y + deltaPercY });
+              nextEl = { x: startEl.x + deltaPercX, y: startEl.y + deltaPercY, w: startEl.w, h: startEl.h };
             } else if (target.action === 'resize') {
               if (target.corner === 'br') {
-                updateElementRef.current?.(elId, {
+                nextEl = {
+                  x: startEl.x,
+                  y: startEl.y,
                   w: Math.max(2, startEl.w + deltaPercX),
                   h: Math.max(2, startEl.h + deltaPercY)
-                });
+                };
               }
               if (target.corner === 'tl') {
-                updateElementRef.current?.(elId, {
+                nextEl = {
                   w: Math.max(2, startEl.w - deltaPercX),
                   h: Math.max(2, startEl.h - deltaPercY),
                   x: startEl.x + deltaPercX,
                   y: startEl.y + deltaPercY
-                });
+                };
               }
               if (target.corner === 'tr') {
-                updateElementRef.current?.(elId, {
+                nextEl = {
                   w: Math.max(2, startEl.w + deltaPercX),
                   h: Math.max(2, startEl.h - deltaPercY),
+                  x: startEl.x,
                   y: startEl.y + deltaPercY
-                });
+                };
               }
               if (target.corner === 'bl') {
-                updateElementRef.current?.(elId, {
+                nextEl = {
                   w: Math.max(2, startEl.w - deltaPercX),
                   h: Math.max(2, startEl.h + deltaPercY),
-                  x: startEl.x + deltaPercX
-                });
+                  x: startEl.x + deltaPercX,
+                  y: startEl.y
+                };
               }
+            }
+            if (nextEl) {
+              elementPreviewRef.current.set(elId, nextEl);
+              applyElementPreview(elId, nextEl);
             }
           } else if (target.type === 'crop') {
             const sc = startState.current;
@@ -2590,16 +2766,43 @@ export default function App() {
               if (target.corner.includes('b'))
                 newCrop.b = Math.max(0, Math.min(sc.b - deltaPercY, 100 - sc.t - 5));
             }
-            updateCurrentEditRef.current({ crop: newCrop });
+            cropPreviewRef.current = newCrop;
+            applyCropPreview(newCrop);
           }
         }
       });
     };
 
     const handleMouseUp = () => {
+      const target = dragTarget.current;
       isDragging.current = false;
-      dragTarget.current = null;
       dragPendingRef.current = null;
+      dragTarget.current = null;
+      lastDragTimeRef.current = 0;
+      if (target?.type === 'element') {
+        const latest = elementPreviewRef.current.get(target.id);
+        if (latest) {
+          updateElement(target.id, latest, true);
+        }
+        elementPreviewRef.current.delete(target.id);
+      } else if (target?.type === 'segment') {
+        const latest = segmentPreviewRef.current.get(target.id);
+        if (latest) {
+          updateSegment(target.id, latest, true);
+        }
+        segmentPreviewRef.current.delete(target.id);
+      } else if (target?.type === 'trim-start' || target?.type === 'trim-end') {
+        if (trimPreviewRef.current) {
+          updateCurrentEdit({ trim: trimPreviewRef.current }, true);
+        }
+      } else if (target?.type === 'crop') {
+        if (cropPreviewRef.current) {
+          updateCurrentEdit({ crop: cropPreviewRef.current }, true);
+        }
+      }
+      trimPreviewRef.current = null;
+      cropPreviewRef.current = null;
+      segmentPreviewRef.current.clear();
     };
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
@@ -2632,11 +2835,18 @@ export default function App() {
       const el = currentEdit.elements.find(e => e.id === targetInfo.id);
       startState.current = { ...el };
       updateCurrentEdit({ selectedId: targetInfo.id }, false);
+      elementPreviewRef.current.delete(targetInfo.id);
     } else if (targetInfo.type === 'segment') {
       const mode = getActiveSegmentMode();
       const seg = getSegmentsForMode(currentEdit, mode).find(s => s.id === targetInfo.id);
       if (seg) startState.current = { start: seg.start, end: seg.end };
-    } else if (targetInfo.type === 'crop') startState.current = { ...currentEdit.crop };
+      segmentPreviewRef.current.delete(targetInfo.id);
+    } else if (targetInfo.type === 'crop') {
+      startState.current = { ...currentEdit.crop };
+      cropPreviewRef.current = null;
+    } else if (targetInfo.type === 'trim-start' || targetInfo.type === 'trim-end') {
+      trimPreviewRef.current = null;
+    }
   };
   const handleWheelZoom = e => {
     if (!viewportRef.current) return;
@@ -2767,8 +2977,9 @@ export default function App() {
     }
     canvas.width = cropPx.w;
     canvas.height = cropPx.h;
-    const { trim, elements, meta } = jobEdit;
+    const { trim, meta } = jobEdit;
     const segmentMode = getSegmentModeForVideo(jobVideo);
+    const elements = filterElementsForMode(jobEdit.elements, segmentMode);
     const segments = getSegmentsForMode(jobEdit, segmentMode);
 
     const exportSegments = Array.isArray(segments) && segments.length > 0
@@ -3127,54 +3338,6 @@ export default function App() {
     setZoom(clampedZoom);
     setPan(newPan);
   };
-  const fileKeySegmentModes = useMemo(() => {
-    const map = new Map();
-    playlist.forEach(video => {
-      if (!video?.fileKey) return;
-      const modes = Array.isArray(video.channels) && video.channels.length > 0
-        ? video.channels.map(channel => channel.mode).filter(Boolean)
-        : [getSegmentModeForVideo(video)];
-      if (!map.has(video.fileKey)) map.set(video.fileKey, new Set());
-      const set = map.get(video.fileKey);
-      modes.forEach(mode => {
-        if (mode) set.add(mode);
-      });
-    });
-    return map;
-  }, [playlist]);
-  const activeSegmentModes = useMemo(() => {
-    const fallback = getSegmentModeForVideo(activeVideo) || 'digital';
-    if (!activeVideo?.fileKey) return [fallback];
-    const set = fileKeySegmentModes.get(activeVideo.fileKey);
-    if (!set || set.size === 0) return [fallback];
-    return SEGMENT_MODES.map(mode => mode.id).filter(id => set.has(id));
-  }, [activeVideo?.fileKey, activeVideo?.id, fileKeySegmentModes]);
-  const activeSegmentModesMeta = useMemo(
-    () => activeSegmentModes.map(id => SEGMENT_MODES.find(mode => mode.id === id)).filter(Boolean),
-    [activeSegmentModes]
-  );
-  const activeSegmentMode = getActiveSegmentMode(activeSegmentModes);
-  const activeSegmentMeta =
-    SEGMENT_MODES.find(mode => mode.id === activeSegmentMode) || SEGMENT_MODES[0];
-  const activeChannelChips = useMemo(
-    () => buildChannelSuffixChips(activeVideo),
-    [activeVideo, currentEdit.segmentMode]
-  );
-  const activeSegments = getSegmentsForMode(currentEdit, activeSegmentMode);
-  const activeSegmentModesKey = activeSegmentModes.join('|');
-  const allSegmentsByMode = useMemo(
-    () =>
-      activeSegmentModesMeta.map(mode => ({
-        meta: mode,
-        segments: getSegmentsForMode(currentEdit, mode.id)
-      })),
-    [currentEdit.segmentSets, activeSegmentModesKey]
-  );
-  useEffect(() => {
-    if (!activeSegmentModes.length) return;
-    if (currentEdit.segmentMode && activeSegmentModes.includes(currentEdit.segmentMode)) return;
-    setActiveSegmentMode(activeSegmentModes[0]);
-  }, [activeSegmentModesKey, currentId]);
   // Batch Progress: (Total - Queue) / Total
   const batchProgressPercent =
     batchTotal > 0 ? ((batchTotal - batchQueue.length) / batchTotal) * 100 : 0;
@@ -3306,6 +3469,9 @@ export default function App() {
     onDragStart: startDrag,
     onSelectElement: id => updateCurrentEdit({ selectedId: id }, false),
     onFocusResizeStart: startFocusResize,
+    visibleElements,
+    selectedElementId: currentEdit.selectedId,
+    processedUrl: currentEdit.processedUrl,
     seekStep,
     activeSegments,
     activeSegmentModesMeta,
@@ -3326,6 +3492,7 @@ export default function App() {
     onSegmentSeek: handleSegmentSeek,
     processingVideoRef,
     processingSrc,
+    processedUrl: currentEdit.processedUrl,
     selectedCount,
     openFfmpegModal,
     openFfmpegBatchModal,

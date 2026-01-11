@@ -1,4 +1,6 @@
-export default function PlayerViewport({
+import React, { memo } from 'react';
+
+function PlayerViewport({
   viewportRef,
   overlayRef,
   videoRef,
@@ -21,7 +23,8 @@ export default function PlayerViewport({
   onMetadata,
   onDragStart,
   onSelectElement,
-  onFocusResizeStart
+  onFocusResizeStart,
+  visibleElements
 }) {
   return (
     <div
@@ -53,11 +56,12 @@ export default function PlayerViewport({
           >
             {currentEdit.viewMode === 'editor' && (
               <>
-                <div className="absolute bg-black/60" style={{ left: 0, top: 0, right: 0, height: `${currentEdit.crop.t}%` }} />
-                <div className="absolute bg-black/60" style={{ left: 0, bottom: 0, right: 0, height: `${currentEdit.crop.b}%` }} />
-                <div className="absolute bg-black/60" style={{ left: 0, top: `${currentEdit.crop.t}%`, bottom: `${currentEdit.crop.b}%`, width: `${currentEdit.crop.l}%` }} />
-                <div className="absolute bg-black/60" style={{ right: 0, top: `${currentEdit.crop.t}%`, bottom: `${currentEdit.crop.b}%`, width: `${currentEdit.crop.r}%` }} />
+                <div data-crop-top className="absolute bg-black/60" style={{ left: 0, top: 0, right: 0, height: `${currentEdit.crop.t}%` }} />
+                <div data-crop-bottom className="absolute bg-black/60" style={{ left: 0, bottom: 0, right: 0, height: `${currentEdit.crop.b}%` }} />
+                <div data-crop-left className="absolute bg-black/60" style={{ left: 0, top: `${currentEdit.crop.t}%`, bottom: `${currentEdit.crop.b}%`, width: `${currentEdit.crop.l}%` }} />
+                <div data-crop-right className="absolute bg-black/60" style={{ right: 0, top: `${currentEdit.crop.t}%`, bottom: `${currentEdit.crop.b}%`, width: `${currentEdit.crop.r}%` }} />
                 <div
+                  data-crop-box
                   className="absolute border-2 border-indigo-500 shadow-[0_0_0_1px_rgba(255,255,255,0.3)] cursor-move"
                   style={{
                     top: `${currentEdit.crop.t}%`,
@@ -86,7 +90,7 @@ export default function PlayerViewport({
                 </div>
               </>
             )}
-            {currentEdit.elements.map(el => {
+            {visibleElements.map(el => {
               const isVisible = currentTime >= el.startTime && currentTime <= el.endTime;
               if (!(isVisible || (currentEdit.viewMode === 'editor' && currentEdit.selectedId === el.id)))
                 return null;
@@ -103,6 +107,7 @@ export default function PlayerViewport({
                   }}
                   className={`absolute ${currentEdit.viewMode === 'editor' ? 'cursor-grab active:cursor-grabbing hover:opacity-90' : ''
                     } ${currentEdit.selectedId === el.id && currentEdit.viewMode === 'editor' ? 'ring-1 ring-blue-400' : ''}`}
+                  data-el-id={el.id}
                   style={{
                     left: `${el.x}%`,
                     top: `${el.y}%`,
@@ -165,3 +170,5 @@ export default function PlayerViewport({
     </div>
   );
 }
+
+export default memo(PlayerViewport);

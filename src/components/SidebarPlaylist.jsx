@@ -1,6 +1,7 @@
+import React, { memo } from 'react';
 import { CheckSquare, Film, Plus, Square as SquareIcon, Trash2 } from 'lucide-react';
 
-export default function SidebarPlaylist({
+function SidebarPlaylist({
   isFocusMode,
   focusSideOpen,
   isDark,
@@ -204,6 +205,11 @@ export default function SidebarPlaylist({
                   const durationLabel =
                     meta?.duration ? `${meta.duration.toFixed(1)}s` : '';
                   const metaLabel = [sizeLabel, durationLabel].filter(Boolean).join(' • ');
+                  const dangerClass = vid.sheetHasBoth
+                    ? isDark
+                      ? 'ring-1 ring-red-500/70 bg-red-900/30'
+                      : 'ring-1 ring-red-400 bg-red-50'
+                    : '';
                   return (
                     <div key={vid.id} style={{ height: `${playlistItemHeight}px` }}>
                       <div
@@ -215,7 +221,7 @@ export default function SidebarPlaylist({
                           : isDark
                             ? 'hover:bg-slate-800 border border-transparent'
                             : 'hover:bg-slate-50 border border-transparent'
-                          } ${dragOverId === vid.id && draggingId !== vid.id ? 'ring-2 ring-indigo-400' : ''}`}
+                          } ${dragOverId === vid.id && draggingId !== vid.id ? 'ring-2 ring-indigo-400' : ''} ${dangerClass}`}
                         draggable
                         onDragStart={e => {
                           setDraggingId(vid.id);
@@ -254,6 +260,11 @@ export default function SidebarPlaylist({
                             title={getVideoTooltip(vid)}
                           >
                             {getDisplayName(vid.name)}
+                            {vid.sheetHasBoth && (
+                              <span className="ml-2 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+                                BOTH
+                              </span>
+                            )}
                           </div>
                           <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2 overflow-hidden whitespace-nowrap">
                             <span>ID: {getShortId(vid.id)}</span>
@@ -319,3 +330,5 @@ export default function SidebarPlaylist({
     </>
   );
 }
+
+export default memo(SidebarPlaylist);

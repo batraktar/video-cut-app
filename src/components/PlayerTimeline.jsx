@@ -1,10 +1,13 @@
+import React, { memo } from 'react';
 import { Pause, Play } from 'lucide-react';
 
-export default function PlayerTimeline({
+function PlayerTimeline({
   isFocusMode,
   isDark,
   currentTime,
-  currentEdit,
+  duration,
+  trim,
+  selectedElementId,
   seekStep,
   activeSegments,
   activeSegmentModesMeta,
@@ -27,7 +30,9 @@ export default function PlayerTimeline({
   onSegmentSeek,
   processingVideoRef,
   processingSrc,
-  activeVideo
+  processedUrl,
+  activeVideo,
+  visibleElements
 }) {
   return (
     <>
@@ -45,7 +50,7 @@ export default function PlayerTimeline({
         {isFocusMode ? (
           <div className="mb-2 space-y-2">
             <div className="flex items-center gap-3 text-[11px] text-white/80">
-              <span className="font-mono">{currentTime.toFixed(3)} / {currentEdit.meta.duration.toFixed(3)}s</span>
+              <span className="font-mono">{currentTime.toFixed(3)} / {duration.toFixed(3)}s</span>
               <span className="text-white/60">Крок: {seekStep}s</span>
               {activeSegments.length > 0 && (
                 <button
@@ -89,7 +94,7 @@ export default function PlayerTimeline({
               {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
             </button>
             <div className="font-mono text-sm opacity-60">
-              {currentTime.toFixed(3)} / {currentEdit.meta.duration.toFixed(3)}s
+              {currentTime.toFixed(3)} / {duration.toFixed(3)}s
             </div>
             <div className="text-[10px] text-slate-400">
               Крок: {seekStep}s
@@ -111,7 +116,7 @@ export default function PlayerTimeline({
               </button>
             )}
             <div className="flex-1"></div>
-            {currentEdit.processedUrl && !isProcessing && (
+            {(processedUrl || processingSrc) && !isProcessing && (
               <span className="text-xs text-green-600 font-bold animate-pulse">Файл скачано!</span>
             )}
           </div>
@@ -127,23 +132,26 @@ export default function PlayerTimeline({
           onMouseDown={onSeek}
         >
           <div className={`absolute top-0 bottom-0 left-0 pointer-events-none ${isDark ? 'bg-slate-600/50' : 'bg-slate-200/50'}`} style={{ width: `${getPct(currentTime)}%` }} />
-          <div className="absolute top-0 bottom-0 left-0 bg-black/40 backdrop-blur-[1px] pointer-events-none border-r border-white/20 z-10" style={{ width: `${getPct(currentEdit.trim.start)}%` }}></div>
-          <div className="absolute top-0 bottom-0 right-0 bg-black/40 backdrop-blur-[1px] pointer-events-none border-l border-white/20 z-10" style={{ width: `${100 - getPct(currentEdit.trim.end)}%` }}></div>
+          <div data-trim-start-mask className="absolute top-0 bottom-0 left-0 bg-black/40 backdrop-blur-[1px] pointer-events-none border-r border-white/20 z-10" style={{ width: `${getPct(trim.start)}%` }}></div>
+          <div data-trim-end-mask className="absolute top-0 bottom-0 right-0 bg-black/40 backdrop-blur-[1px] pointer-events-none border-l border-white/20 z-10" style={{ width: `${100 - getPct(trim.end)}%` }}></div>
           <div
+            data-trim-box
             className="absolute top-0 bottom-0 border-t-2 border-b-2 border-indigo-500/30 pointer-events-none"
-            style={{ left: `${getPct(currentEdit.trim.start)}%`, right: `${100 - getPct(currentEdit.trim.end)}%` }}
+            style={{ left: `${getPct(trim.start)}%`, right: `${100 - getPct(trim.end)}%` }}
           />
           <div
+            data-trim-start
             className="absolute top-0 bottom-0 w-4 bg-indigo-600 cursor-ew-resize z-20 hover:brightness-110 shadow-lg flex items-center justify-center group/handle"
-            style={{ left: `${getPct(currentEdit.trim.start)}%`, transform: 'translateX(-50%)' }}
+            style={{ left: `${getPct(trim.start)}%`, transform: 'translateX(-50%)' }}
             onMouseDown={e => onDragStart(e, { type: 'trim-start' })}
             onClick={e => e.stopPropagation()}
           >
             <div className="w-0.5 h-6 bg-white/50 rounded-full"></div>
           </div>
           <div
+            data-trim-end
             className="absolute top-0 bottom-0 w-4 bg-indigo-600 cursor-ew-resize z-20 hover:brightness-110 shadow-lg flex items-center justify-center group/handle"
-            style={{ left: `${getPct(currentEdit.trim.end)}%`, transform: 'translateX(-50%)' }}
+            style={{ left: `${getPct(trim.end)}%`, transform: 'translateX(-50%)' }}
             onMouseDown={e => onDragStart(e, { type: 'trim-end' })}
             onClick={e => e.stopPropagation()}
           >
@@ -180,14 +188,23 @@ export default function PlayerTimeline({
               );
             })
           )}
-          {currentEdit.elements.map(el => (
-            <div
-              key={el.id}
-              className={`absolute top-1 h-1.5 rounded-full pointer-events-none opacity-60 ${currentEdit.selectedId === el.id ? 'bg-yellow-500 z-10' : isDark ? 'bg-slate-500' : 'bg-slate-400'
-                }`}
-              style={{ left: `${getPct(el.startTime)}%`, width: `${getPct(el.endTime - el.startTime)}%` }}
-            />
-          ))}
+          {visibleElements.map(el => {
+            const label = el.channelMode && el.channelMode !== 'all' ? el.channelMode : null;
+            return (
+              <div
+                key={el.id}
+                className={`absolute top-1 h-1.5 rounded-full pointer-events-none opacity-60 ${selectedElementId === el.id ? 'bg-yellow-500 z-10' : isDark ? 'bg-slate-500' : 'bg-slate-400'
+                  }`}
+                style={{ left: `${getPct(el.startTime)}%`, width: `${getPct(el.endTime - el.startTime)}%` }}
+              >
+                {label && (
+                  <span className="absolute -top-3 left-0 text-[9px] px-1 rounded bg-black/60 text-white">
+                    {label}
+                  </span>
+                )}
+              </div>
+            );
+          })}
           <div className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10 pointer-events-none shadow-[0_0_5px_rgba(239,68,68,0.8)]" style={{ left: `${getPct(currentTime)}%` }}>
             <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-3 h-3 bg-red-500 transform rotate-45"></div>
           </div>
@@ -237,3 +254,5 @@ export default function PlayerTimeline({
     </>
   );
 }
+
+export default memo(PlayerTimeline);

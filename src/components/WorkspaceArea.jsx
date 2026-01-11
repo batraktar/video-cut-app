@@ -48,6 +48,9 @@ export default function WorkspaceArea({
   onSegmentSeek,
   processingVideoRef,
   processingSrc,
+  visibleElements,
+  processedUrl,
+  selectedElementId,
   selectedCount,
   openFfmpegModal,
   openFfmpegBatchModal,
@@ -103,12 +106,15 @@ export default function WorkspaceArea({
           onDragStart={onDragStart}
           onSelectElement={onSelectElement}
           onFocusResizeStart={onFocusResizeStart}
+          visibleElements={visibleElements}
         />
         <PlayerTimeline
           isFocusMode={isFocusMode}
           isDark={isDark}
           currentTime={currentTime}
-          currentEdit={currentEdit}
+          duration={currentEdit.meta.duration}
+          trim={currentEdit.trim}
+          selectedElementId={selectedElementId}
           seekStep={seekStep}
           activeSegments={activeSegments}
           activeSegmentModesMeta={activeSegmentModesMeta}
@@ -131,7 +137,9 @@ export default function WorkspaceArea({
           onSegmentSeek={onSegmentSeek}
           processingVideoRef={processingVideoRef}
           processingSrc={processingSrc}
+          processedUrl={processedUrl}
           activeVideo={activeVideo}
+          visibleElements={visibleElements}
         />
       </div>
 
