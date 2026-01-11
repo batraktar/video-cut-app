@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Layers, Save } from 'lucide-react';
 
 export default function AdminModal({
@@ -44,9 +45,26 @@ export default function AdminModal({
   onRunLogo
 }) {
   if (!open) return null;
+  const overlayRef = useRef(null);
+
+  useEffect(() => {
+    const handleKey = e => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  const handleOverlayMouseDown = e => {
+    if (e.target === overlayRef.current) onClose();
+  };
 
   return (
-    <div className="fixed inset-0 z-[9997] flex items-center justify-center bg-black/50">
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 z-[9997] flex items-center justify-center bg-black/50"
+      onMouseDown={handleOverlayMouseDown}
+    >
       <div className={`w-full max-w-5xl rounded-2xl p-5 shadow-2xl ${isDark ? 'bg-slate-900 text-slate-100' : 'bg-white text-slate-800'}`}>
         <div className="flex items-start justify-between mb-4">
           <div>
