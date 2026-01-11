@@ -398,6 +398,10 @@ export default function App() {
     if (!saved) return null;
     const segmentMode = saved.segmentMode || 'digital';
     const segmentSets = normalizeSegmentSets(saved.segmentSets, saved.segments, segmentMode);
+    const meta = saved.meta || {};
+    const metaWidth = Number.isFinite(meta.width) ? meta.width : 0;
+    const metaHeight = Number.isFinite(meta.height) ? meta.height : 0;
+    const metaDuration = Number.isFinite(meta.duration) ? meta.duration : saved.duration || 0;
     return {
       ...DEFAULT_EDIT_STATE,
       trim: saved.trim ? { ...saved.trim } : DEFAULT_EDIT_STATE.trim,
@@ -412,12 +416,13 @@ export default function App() {
       selectedId: null,
       history: [],
       future: [],
-      meta: { duration: saved.duration || 0, width: 0, height: 0 }
+      meta: { duration: metaDuration, width: metaWidth, height: metaHeight }
     };
   };
   const getSavedEditForVideo = (savedEdits, video, fileKeyCounts) => {
     if (!savedEdits || !video) return null;
     if (savedEdits[video.id]) return savedEdits[video.id];
+    if (video.fileKey && savedEdits[video.fileKey]) return savedEdits[video.fileKey];
     if (fileKeyCounts?.get(video.fileKey) === 1) return savedEdits[video.fileKey] || null;
     return null;
   };
@@ -1894,7 +1899,7 @@ export default function App() {
     const currentVideo = playlist.find(v => v.id === currentId);
     if (!currentVideo?.id) return;
     const saved = savedEditsRef.current || {};
-    saved[currentVideo.id] = {
+    const snapshot = {
       trim: currentEdit.trim,
       crop: currentEdit.crop,
       elements: currentEdit.elements,
@@ -1902,8 +1907,16 @@ export default function App() {
       segmentSets: currentEdit.segmentSets,
       segmentMode: currentEdit.segmentMode,
       viewMode: currentEdit.viewMode,
-      duration: currentEdit.meta.duration
+      meta: {
+        duration: currentEdit.meta.duration,
+        width: currentEdit.meta.width,
+        height: currentEdit.meta.height
+      }
     };
+    saved[currentVideo.id] = snapshot;
+    if (currentVideo.fileKey && currentVideo.fileKey !== currentVideo.id) {
+      saved[currentVideo.fileKey] = snapshot;
+    }
     savedEditsRef.current = saved;
     saveToStorage(STORAGE_KEYS.edits, saved);
   }, [currentId, currentEdit, playlist]);
