@@ -1,16 +1,39 @@
-# React + Vite
+# Video Cut App
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite застосунок для нарізки відео, роботи з сегментами/оверлеями, експорту через FFmpeg та інтеграції з локальним сервером (Express + SQLite + імпорт Google Sheets).
 
-Currently, two official plugins are available:
+## Швидкий старт
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+```bash
+npm install
+npm run dev        # фронт (Vite)
+npm run server     # бек (server/), порт 7071 за замовчуванням
+```
 
-## React Compiler
+- Веб інтерфейс: http://localhost:5173
+- Сервер: http://localhost:7071 (можна змінити в UI адмінки)
+- Запуск обох одночасно: `npm run dev:all`
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Скрипти
 
-## Expanding the ESLint configuration
+- `npm run dev` — фронт
+- `npm run server` — локальний сервер (Express + SQLite)
+- `npm run dev:all` — фронт і сервер паралельно (concurrently)
+- `npm run build` — збірка фронту
+- `npm run lint` — ESLint
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Структура
+
+- `src/` — React UI, редактор, хуки
+- `server/` — локальний бекенд (Express, SQLite, імпорт шита)
+- `public/` — статика
+
+## Зберігання
+
+- Редагування кешуються у `localStorage` та IndexedDB (резерв під ключами `id`/`fileKey`).
+- Кеш файлів у IndexedDB (`videos` store).
+- Логи та `server/metadata.sqlite` ігноруються в git.
+
+## Ліцензія
+
+MIT — див. `LICENSE`.
