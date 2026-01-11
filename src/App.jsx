@@ -428,6 +428,7 @@ export default function App() {
   };
   const savedEditsRef = useRef(loadFromStorage(STORAGE_KEYS.edits, {}));
   const dbRef = useRef(null);
+  const editsLoadedRef = useRef(false);
 
   const openDb = () =>
     new Promise((resolve, reject) => {
@@ -435,11 +436,14 @@ export default function App() {
         reject(new Error('IndexedDB недоступна'));
         return;
       }
-      const request = indexedDB.open('video-cut-db', 1);
+      const request = indexedDB.open('video-cut-db', 2);
       request.onupgradeneeded = () => {
         const db = request.result;
         if (!db.objectStoreNames.contains('videos')) {
           db.createObjectStore('videos', { keyPath: 'fileKey' });
+        }
+        if (!db.objectStoreNames.contains('edits')) {
+          db.createObjectStore('edits', { keyPath: 'id' });
         }
       };
       request.onsuccess = () => resolve(request.result);
@@ -482,6 +486,68 @@ export default function App() {
       tx.onerror = () => reject(tx.error);
     });
   };
+
+  const idbSaveEdit = async (id, snapshot) => {
+    if (!id) return;
+    const db = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('edits', 'readwrite');
+      tx.objectStore('edits').put({ id, snapshot });
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  };
+
+  const idbLoadEdits = async () => {
+    const db = await getDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('edits', 'readonly');
+      const req = tx.objectStore('edits').getAll();
+      req.onsuccess = () => {
+        const result = {};
+        (req.result || []).forEach(item => {
+          if (item?.id && item.snapshot) result[item.id] = item.snapshot;
+        });
+        resolve(result);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateFromIdb = async () => {
+      if (editsLoadedRef.current) return;
+      try {
+        const idbEdits = await idbLoadEdits();
+        if (cancelled || !idbEdits || Object.keys(idbEdits).length === 0) {
+          editsLoadedRef.current = true;
+          return;
+        }
+        const current = savedEditsRef.current || {};
+        if (Object.keys(current).length === 0) {
+          savedEditsRef.current = idbEdits;
+          saveToStorage(STORAGE_KEYS.edits, idbEdits);
+          setEdits(prev => {
+            const next = { ...prev };
+            Object.entries(idbEdits).forEach(([key, snap]) => {
+              const restored = buildEditFromSaved(snap);
+              if (restored) next[key] = restored;
+            });
+            return next;
+          });
+        }
+      } catch (e) {
+        // ignore
+      } finally {
+        editsLoadedRef.current = true;
+      }
+    };
+    hydrateFromIdb();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const savedList = loadFromStorage(STORAGE_KEYS.playlist, []);
@@ -701,8 +767,12 @@ export default function App() {
   const getSegmentTotal = segments =>
     segments.reduce((sum, seg) => sum + Math.max(0, (seg.end ?? 0) - (seg.start ?? 0)), 0);
 
+  const lastHudRef = useRef(0);
   const showHud = text => {
     if (isDragging.current) return;
+    const now = performance.now();
+    if (now - lastHudRef.current < 120) return;
+    lastHudRef.current = now;
     setHudText(text);
     if (hudTimeoutRef.current) clearTimeout(hudTimeoutRef.current);
     hudTimeoutRef.current = setTimeout(() => setHudText(null), 1000);
@@ -1919,6 +1989,10 @@ export default function App() {
     }
     savedEditsRef.current = saved;
     saveToStorage(STORAGE_KEYS.edits, saved);
+    idbSaveEdit(currentVideo.id, snapshot).catch(() => { });
+    if (currentVideo.fileKey && currentVideo.fileKey !== currentVideo.id) {
+      idbSaveEdit(currentVideo.fileKey, snapshot).catch(() => { });
+    }
   }, [currentId, currentEdit, playlist]);
 
   useEffect(() => {
@@ -2303,6 +2377,33 @@ export default function App() {
     const newEl = { ...el, id: Date.now().toString(), x: el.x + 2, y: el.y + 2 };
     updateCurrentEdit({ elements: [...currentEdit.elements, newEl], selectedId: newEl.id });
     showHud("Прямокутник дубльовано");
+  };
+
+  const alignElement = (id, mode) => {
+    const el = currentEdit.elements.find(e => e.id === id);
+    if (!el) return;
+    const next = { ...el };
+    if (mode === 'center-h') next.x = 50 - el.w / 2;
+    if (mode === 'center-v') next.y = 50 - el.h / 2;
+    if (mode === 'top') next.y = 0;
+    if (mode === 'bottom') next.y = 100 - el.h;
+    if (mode === 'left') next.x = 0;
+    if (mode === 'right') next.x = 100 - el.w;
+    updateElement(id, next);
+    showHud("Вирівняно");
+  };
+
+  const snapElementToGrid = (id, step = 5) => {
+    const el = currentEdit.elements.find(e => e.id === id);
+    if (!el) return;
+    const snap = val => Math.max(0, Math.min(100, Math.round(val / step) * step));
+    updateElement(id, {
+      x: snap(el.x),
+      y: snap(el.y),
+      w: snap(el.w),
+      h: snap(el.h)
+    });
+    showHud("Прив’язка до сітки");
   };
 
   const copyAttributes = el => {

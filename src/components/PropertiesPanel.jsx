@@ -41,7 +41,9 @@ function PropertiesPanel({
   pasteAttributes,
   copiedAttributes,
   deleteElement,
-  updateElement
+  updateElement,
+  alignElement,
+  snapElementToGrid
 }) {
   return (
     <div
@@ -400,6 +402,54 @@ function PropertiesPanel({
                 </option>
               ))}
             </select>
+          </div>
+          <div className="space-y-2 pt-2 border-t">
+            <label className="text-xs font-bold opacity-70 block">Вирівнювання</label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                onClick={() => alignElement(selectedElement.id, 'left')}
+                className="text-[10px] py-1 rounded border bg-slate-100 hover:bg-slate-200"
+              >
+                Вліво
+              </button>
+              <button
+                onClick={() => alignElement(selectedElement.id, 'center-h')}
+                className="text-[10px] py-1 rounded border bg-slate-100 hover:bg-slate-200"
+              >
+                Центр
+              </button>
+              <button
+                onClick={() => alignElement(selectedElement.id, 'right')}
+                className="text-[10px] py-1 rounded border bg-slate-100 hover:bg-slate-200"
+              >
+                Вправо
+              </button>
+              <button
+                onClick={() => alignElement(selectedElement.id, 'top')}
+                className="text-[10px] py-1 rounded border bg-slate-100 hover:bg-slate-200"
+              >
+                Вгору
+              </button>
+              <button
+                onClick={() => alignElement(selectedElement.id, 'center-v')}
+                className="text-[10px] py-1 rounded border bg-slate-100 hover:bg-slate-200"
+              >
+                Центр V
+              </button>
+              <button
+                onClick={() => alignElement(selectedElement.id, 'bottom')}
+                className="text-[10px] py-1 rounded border bg-slate-100 hover:bg-slate-200"
+              >
+                Вниз
+              </button>
+            </div>
+            <button
+              onClick={() => snapElementToGrid(selectedElement.id)}
+              className="w-full text-[10px] py-2 rounded border bg-slate-200 hover:bg-slate-300"
+              title="Прив’язка до сітки 5%"
+            >
+              Snap 5%
+            </button>
           </div>
         </div>
       ) : (
