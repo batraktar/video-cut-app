@@ -11,3 +11,65 @@ body,
 body {
   margin: 0;
 }
+
+@keyframes snow-fall-1 {
+  0% {
+    transform: translate3d(-10%, -20%, 0);
+  }
+  100% {
+    transform: translate3d(10%, 20%, 0);
+  }
+}
+
+@keyframes snow-fall-2 {
+  0% {
+    transform: translate3d(5%, -30%, 0);
+  }
+  100% {
+    transform: translate3d(-5%, 30%, 0);
+  }
+}
+
+.snow-overlay {
+  overflow: hidden;
+  mix-blend-mode: screen;
+}
+
+.snow-overlay::before,
+.snow-overlay::after {
+  content: '';
+  position: absolute;
+  inset: -50%;
+  background-repeat: repeat;
+  pointer-events: none;
+}
+
+.snow-overlay::before {
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.55) 1px, transparent 1.6px),
+    radial-gradient(rgba(255, 255, 255, 0.35) 0.8px, transparent 1.4px);
+  background-size: 120px 120px, 90px 90px;
+  background-position: 0 0, 40px 70px;
+  opacity: 0.45;
+  filter: blur(0.2px);
+  animation: snow-fall-1 calc(14s / var(--snow-speed, 1)) linear infinite;
+}
+
+.snow-overlay::after {
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.55) 0.9px, transparent 1.5px),
+    radial-gradient(rgba(255, 255, 255, 0.28) 0.7px, transparent 1.2px),
+    radial-gradient(rgba(255, 255, 255, 0.20) 0.6px, transparent 1.2px);
+  background-size: 80px 80px, 140px 140px, 60px 60px;
+  background-position: 10px 30px, 90px 20px, 25px 110px;
+  opacity: 0.35;
+  filter: blur(0.15px);
+  animation: snow-fall-2 calc(10s / var(--snow-speed, 1)) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .snow-overlay::before,
+  .snow-overlay::after {
+    animation: none;
+  }
+}

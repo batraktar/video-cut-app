@@ -12,6 +12,7 @@ import {
   extractFfmpegTime,
   getEntryOrder,
   getExportDurationForEdit,
+  getSegmentsForMode,
   getServerFileKey,
   getSheetCsvUrl,
   getSuffixForSegmentMode,
@@ -66,7 +67,10 @@ export default function useAdmin({
     getVideoChannelVariants,
     allowDoneForVideo,
     buildFfmpegLinesFor,
+    getVideoOutputDir,
     getVideoDoneDir,
+    getSegmentModeForVideo,
+    buildRcloneCopyLine,
     getExpectedModesForAi
   } = helpers;
 
@@ -90,8 +94,23 @@ export default function useAdmin({
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminAiLoading, setAdminAiLoading] = useState(false);
   const [adminAiStats, setAdminAiStats] = useState(null);
+  const [adminAiQueue, setAdminAiQueue] = useState([]);
+  const [adminAiLastRequestAt, setAdminAiLastRequestAt] = useState(null);
+  const [adminAiLastError, setAdminAiLastError] = useState(null);
+  const [adminAiLastProvider, setAdminAiLastProvider] = useState('');
+  const [adminAiRemoteState, setAdminAiRemoteState] = useState({
+    status: 'idle',
+    lastCheckedAt: null,
+    lastHttp: null,
+    lastError: null
+  });
   const [adminLogoLoading, setAdminLogoLoading] = useState(false);
   const [adminLogoStats, setAdminLogoStats] = useState(null);
+  const [adminSyncState, setAdminSyncState] = useState({
+    status: 'idle',
+    updatedAt: null,
+    error: null
+  });
 
   const sheetMapRef = useRef(null);
   const sheetMapPromiseRef = useRef(null);
@@ -99,6 +118,57 @@ export default function useAdmin({
   const adminJobStatusRef = useRef(new Map());
   const autoSaveTimerRef = useRef(null);
   const lastSnapshotRef = useRef('');
+  const adminAiAbortRef = useRef({ aborted: false, controller: null });
+
+  const setAiQueueStatus = useCallback((id, patch) => {
+    setAdminAiQueue(prev =>
+      prev.map(item => (item.id === id ? { ...item, ...patch } : item))
+    );
+  }, []);
+
+  const pingAdminAiRemote = useCallback(async () => {
+    const base = String(adminConfig.aiRemoteUrl || '').trim().replace(/\/+$/, '');
+    if (!base) {
+      setAdminAiRemoteState({
+        status: 'idle',
+        lastCheckedAt: null,
+        lastHttp: null,
+        lastError: null
+      });
+      return;
+    }
+    setAdminAiRemoteState(prev => ({
+      ...prev,
+      status: 'checking',
+      lastCheckedAt: Date.now(),
+      lastError: null
+    }));
+    try {
+      const res = await fetch(`${base}/health`, { method: 'GET' });
+      if (!res.ok) {
+        setAdminAiRemoteState({
+          status: 'error',
+          lastCheckedAt: Date.now(),
+          lastHttp: res.status,
+          lastError: `HTTP ${res.status}`
+        });
+        return;
+      }
+      setAdminAiRemoteState({
+        status: 'ok',
+        lastCheckedAt: Date.now(),
+        lastHttp: res.status,
+        lastError: null
+      });
+    } catch (e) {
+      setAdminAiRemoteState({
+        status: 'error',
+        lastCheckedAt: Date.now(),
+        lastHttp: null,
+        lastError: 'Connection failed'
+      });
+    }
+  }, [adminConfig.aiRemoteUrl]);
 
   const fetchAdminJson = useCallback(
     async (path, options = {}) => {
@@ -110,7 +180,8 @@ export default function useAdmin({
         const res = await fetch(`${adminBaseUrl}${path}`, {
           method: options.method || 'GET',
           headers: options.json ? { 'Content-Type': 'application/json' } : undefined,
-          body: options.json ? JSON.stringify(options.json) : undefined
+          body: options.json ? JSON.stringify(options.json) : undefined,
+          signal: options.signal
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return await res.json();
@@ -247,6 +318,7 @@ export default function useAdmin({
           typeof data.config.logoScales === 'string'
             ? data.config.logoScales
             : DEFAULT_ADMIN_CONFIG.logoScales,
+        aiRemoteUrl: data.config.aiRemoteUrl || DEFAULT_ADMIN_CONFIG.aiRemoteUrl,
         sheetId: data.config.sheetId || DEFAULT_ADMIN_CONFIG.sheetId,
         sheetGid: data.config.sheetGid || DEFAULT_ADMIN_CONFIG.sheetGid
       });
@@ -284,6 +356,7 @@ export default function useAdmin({
         typeof adminConfig.logoScales === 'string'
           ? adminConfig.logoScales
           : DEFAULT_ADMIN_CONFIG.logoScales,
+      aiRemoteUrl: adminConfig.aiRemoteUrl || DEFAULT_ADMIN_CONFIG.aiRemoteUrl,
       sheetId: adminConfig.sheetId || DEFAULT_ADMIN_CONFIG.sheetId,
       sheetGid: adminConfig.sheetGid || DEFAULT_ADMIN_CONFIG.sheetGid
     };
@@ -306,6 +379,7 @@ export default function useAdmin({
         const idxMode = headers.indexOf('analog_digital');
         const idxCameraType = headers.indexOf('camera_type');
         const idxStatus = headers.indexOf('status');
+        const idxLabels = headers.indexOf('labels');
         if (idxFile === -1) throw new Error('sheet_bad');
         const map = new Map();
         for (let i = 1; i < rows.length; i += 1) {
@@ -319,7 +393,8 @@ export default function useAdmin({
             fileName: String(rawName || '').trim(),
             analogDigital: row[idxMode] ? String(row[idxMode]).trim() : '',
             cameraType: row[idxCameraType] ? String(row[idxCameraType]).trim() : '',
-            status: row[idxStatus] ? String(row[idxStatus]).trim() : ''
+            status: row[idxStatus] ? String(row[idxStatus]).trim() : '',
+            labels: idxLabels >= 0 && row[idxLabels] ? String(row[idxLabels]).trim() : ''
           });
         }
         sheetMapRef.current = map;
@@ -335,8 +410,28 @@ export default function useAdmin({
     return sheetMapPromiseRef.current;
   }, [adminConfig, showHud]);
 
-  const buildSnapshotPayload = useCallback(
-    () => ({
+  const buildSnapshotPayload = useCallback(() => {
+    const serializeEdit = edit => ({
+      trim: edit.trim,
+      crop: edit.crop,
+      elements: edit.elements,
+      segments: edit.segments,
+      segmentSets: edit.segmentSets,
+      segmentMode: edit.segmentMode,
+      viewMode: edit.viewMode,
+      meta: {
+        duration: edit.meta?.duration || 0,
+        width: edit.meta?.width || 0,
+        height: edit.meta?.height || 0
+      }
+    });
+    const mergedEdits = { ...(savedEditsRef.current || {}) };
+    Object.entries(edits || {}).forEach(([id, edit]) => {
+      if (!edit) return;
+      mergedEdits[id] = serializeEdit(edit);
+    });
+    savedEditsRef.current = mergedEdits;
+    return {
       playlist: playlistRef.current.map(v => ({
         id: v.id,
         name: v.name,
@@ -350,12 +445,13 @@ export default function useAdmin({
         sheetCameraType: v.sheetCameraType || '',
         sheetStatus: v.sheetStatus || '',
         notRelevant: !!v.notRelevant,
+        hasSnow: !!v.hasSnow,
         channels: Array.isArray(v.channels) ? v.channels : [],
         source: v.source || '',
         sourcePath: v.sourcePath || '',
         sourceBaseDir: v.sourceBaseDir || ''
       })),
-      edits: savedEditsRef.current || {},
+      edits: mergedEdits,
       prefs: {
         isDark,
         batchSuffix,
@@ -365,19 +461,19 @@ export default function useAdmin({
         adminBaseUrl,
         overwriteOutputs
       }
-    }),
-    [
-      playlistRef,
-      savedEditsRef,
-      isDark,
-      batchSuffix,
-      seekStep,
-      uploadToDrive,
-      sidebarWidth,
-      adminBaseUrl,
-      overwriteOutputs
-    ]
-  );
+    };
+  }, [
+    playlistRef,
+    savedEditsRef,
+    edits,
+    isDark,
+    batchSuffix,
+    seekStep,
+    uploadToDrive,
+    sidebarWidth,
+    adminBaseUrl,
+    overwriteOutputs
+  ]);
 
   const applySnapshotPayload = useCallback(
     payload => {
@@ -504,8 +600,18 @@ export default function useAdmin({
 
   const saveAdminSnapshot = useCallback(async () => {
     const payload = buildSnapshotPayload();
+    setAdminSyncState(prev => ({ ...prev, status: 'syncing', error: null }));
     const data = await fetchAdminJson('/sync', { method: 'POST', json: payload });
-    if (data?.ok) showHud("Стан збережено в БД");
+    if (data?.ok) {
+      setAdminSyncState({
+        status: 'ok',
+        updatedAt: data.updatedAt || new Date().toISOString(),
+        error: null
+      });
+      showHud("Стан збережено в БД");
+    } else {
+      setAdminSyncState({ status: 'error', updatedAt: null, error: 'sync_failed' });
+    }
   }, [buildSnapshotPayload, fetchAdminJson, showHud]);
 
   const applyAdminSnapshot = useCallback(() => {
@@ -559,38 +665,98 @@ export default function useAdmin({
     const useBatchSuffix = selected.length > 0;
     targets.forEach(video => {
       const edit = edits[video.id] || DEFAULT_EDIT_STATE;
-      const variants = getVideoChannelVariants(video);
-      variants.forEach(variant => {
-        const allowRenameOriginal = allowDoneForVideo(variant, fileKeyCounts, fileKeyVariants);
-        const result = buildFfmpegLinesFor(variant, edit, {
-          useBatchSuffix,
-          allowRenameOriginal,
-          overwriteOutput: overwriteOutputs,
-          segmentMode: variant.channelMode
-        });
-        if (result.error) {
-          skipped.push(variant.name || variant.id);
-          return;
-        }
-        const needsOutputDir = result.needsOutputDir !== false;
-        const outputDir = result.outputDir || 'cutted';
-        const tmpDir = result.tmpDir || `${outputDir}/_tmp`;
-        const header = [
-          ...(needsOutputDir ? [`mkdir -p "${outputDir}"`] : []),
-          ...(needsOutputDir && result.usesTemp ? [`mkdir -p "${tmpDir}"`] : [])
-        ];
-        const command = [...header, ...result.lines].join('\n').trim();
-        if (!command) {
-          skipped.push(variant.name || variant.id);
-          return;
-        }
-        const label = SEGMENT_MODES.find(mode => mode.id === variant.channelMode)?.label;
-        jobsToRun.push({
-          command,
-          expectedDuration: getExportDurationForEdit(edit, variant.channelMode),
-          label: `${variant.name || variant.id} ${label || variant.suffix || ''}`.trim()
+      const baseVariants = getVideoChannelVariants(video);
+      const existing = new Set(baseVariants.map(item => item.channelMode).filter(Boolean));
+      const variants = [...baseVariants];
+      SEGMENT_MODES.forEach(mode => {
+        if (existing.has(mode.id)) return;
+        const segs = getSegmentsForMode(edit, mode.id);
+        if (!Array.isArray(segs) || segs.length === 0) return;
+        variants.push({
+          ...video,
+          channelMode: mode.id,
+          suffix: getSuffixForSegmentMode(mode.id)
         });
       });
+      let lastJobIndex = null;
+      let lastRenameLine = null;
+      variants.forEach(variant => {
+        const modeSegments = getSegmentsForMode(edit, variant.channelMode);
+        const supportsSnow = true;
+        const snowSegments = Array.isArray(modeSegments) ? modeSegments.filter(seg => !!seg?.isSnow) : [];
+        const normalSegments = Array.isArray(modeSegments) ? modeSegments.filter(seg => !seg?.isSnow) : [];
+        const hasAnySegments = Array.isArray(modeSegments) && modeSegments.length > 0;
+        const jobs = [];
+
+        if (!hasAnySegments) {
+          jobs.push({ video: variant, segmentsOverride: undefined, labelSuffix: '' });
+        } else {
+          if (normalSegments.length > 0) {
+            jobs.push({ video: variant, segmentsOverride: normalSegments, labelSuffix: '' });
+          }
+          if (supportsSnow && snowSegments.length > 0) {
+            jobs.push({
+              video: { ...variant, suffix: `${variant.suffix || ''}_snow` },
+              segmentsOverride: snowSegments,
+              labelSuffix: 'snow'
+            });
+          }
+        }
+
+        jobs.forEach(job => {
+          const allowRenameOriginal = allowDoneForVideo(job.video, fileKeyCounts, fileKeyVariants);
+          const result = buildFfmpegLinesFor(job.video, edit, {
+            useBatchSuffix,
+            allowRenameOriginal,
+            overwriteOutput: overwriteOutputs,
+            segmentMode: variant.channelMode,
+            segmentsOverride: job.segmentsOverride,
+            batchSuffix,
+            getVideoOutputDir,
+            getVideoDoneDir,
+            getSegmentModeForVideo,
+            buildRcloneCopyLine,
+            includeRenameLine: false
+          });
+          if (result.error) {
+            skipped.push(job.video.name || job.video.id);
+            return;
+          }
+          if (result.renameLine) lastRenameLine = result.renameLine;
+          const needsOutputDir = result.needsOutputDir !== false;
+          const outputDir = result.outputDir || 'cutted';
+          const tmpDir = result.tmpDir || `${outputDir}/_tmp`;
+          const header = [
+            ...(needsOutputDir ? [`mkdir -p \"${outputDir}\"`] : []),
+            ...(needsOutputDir && result.usesTemp ? [`mkdir -p \"${tmpDir}\"`] : [])
+          ];
+          const command = [...header, ...result.lines].join('\n').trim();
+          if (!command) {
+            skipped.push(job.video.name || job.video.id);
+            return;
+          }
+          const label = SEGMENT_MODES.find(mode => mode.id === variant.channelMode)?.label;
+          const expectedDuration = Array.isArray(job.segmentsOverride)
+            ? job.segmentsOverride.reduce(
+                (sum, seg) => sum + Math.max(0, (seg.end ?? 0) - (seg.start ?? 0)),
+                0
+              )
+            : getExportDurationForEdit(edit, variant.channelMode);
+          jobsToRun.push({
+            command,
+            expectedDuration,
+            label: `${job.video.name || job.video.id} ${label || job.video.suffix || ''}${job.labelSuffix ? ` ${job.labelSuffix}` : ''}`.trim()
+          });
+          lastJobIndex = jobsToRun.length - 1;
+        });
+      });
+      if (lastRenameLine && lastJobIndex !== null) {
+        const base = jobsToRun[lastJobIndex];
+        jobsToRun[lastJobIndex] = {
+          ...base,
+          command: `${base.command}\n${lastRenameLine}`.trim()
+        };
+      }
     });
     if (jobsToRun.length === 0) {
       showHud("Немає валідних відео для FFmpeg");
@@ -781,9 +947,32 @@ export default function useAdmin({
     [playlistRef, setEdits]
   );
 
-  const runAdminAiSegments = useCallback(async () => {
-    const selected = playlist.filter(p => p.checked);
-    const targets = selected.length > 0 ? selected : activeVideo ? [activeVideo] : [];
+  const resolveAiTargets = useCallback(
+    overrideIds => {
+      if (overrideIds && overrideIds.size) {
+        return playlist.filter(item => overrideIds.has(item.id));
+      }
+      const selected = playlist.filter(p => p.checked);
+      return selected.length > 0 ? selected : activeVideo ? [activeVideo] : [];
+    },
+    [activeVideo, playlist]
+  );
+
+  const buildAiQueue = useCallback((targets, provider) => {
+    setAdminAiQueue(
+      targets.map(item => ({
+        id: item.id,
+        name: item.name || item.fileKey || item.id,
+        sourcePath: item.sourcePath || '',
+        status: 'pending',
+        provider
+      }))
+    );
+    setAdminAiLastProvider(provider);
+  }, []);
+
+  const runAdminAiSegments = useCallback(async (overrideIds = null) => {
+    const targets = resolveAiTargets(overrideIds);
     if (targets.length === 0) {
       showHud("Оберіть відео");
       return;
@@ -803,8 +992,20 @@ export default function useAdmin({
       showHud("Потрібні відео з теки сервера");
       return;
     }
+    buildAiQueue(targets, 'local');
+    setAdminAiQueue(prev =>
+      prev.map(item =>
+        item.sourcePath ? { ...item, status: 'running' } : { ...item, status: 'error', error: 'no_source' }
+      )
+    );
     setAdminAiLoading(true);
     setAdminAiStats(null);
+    setAdminAiLastRequestAt(Date.now());
+    setAdminAiLastError(null);
+    adminAiAbortRef.current = {
+      aborted: false,
+      controller: new AbortController()
+    };
     const data = await fetchAdminJson('/ai/segments', {
       method: 'POST',
       json: {
@@ -816,16 +1017,50 @@ export default function useAdmin({
         writeFfmpeg: true,
         overwrite: overwriteOutputs
       },
-      silent: true
+      silent: true,
+      signal: adminAiAbortRef.current.controller?.signal
     });
     setAdminAiLoading(false);
+    if (adminAiAbortRef.current.aborted) {
+      setAdminAiQueue(prev =>
+        prev.map(item =>
+          item.status === 'running' || item.status === 'pending'
+            ? { ...item, status: 'error', error: 'stopped' }
+            : item
+        )
+      );
+      showHud("AI зупинено");
+      return;
+    }
     if (!data?.ok) {
+      setAdminAiLastError('AI failed');
+      setAdminAiQueue(prev =>
+        prev.map(item =>
+          item.status === 'running' || item.status === 'pending'
+            ? { ...item, status: 'error', error: 'request_failed' }
+            : item
+        )
+      );
       showHud("AI не відпрацював");
       return;
     }
     const items = data.payload?.items || [];
     applyAiSegments(items);
-    setAdminAiStats({ processed: items.length });
+    const itemIds = new Set(items.map(item => item.id).filter(Boolean));
+    const itemPaths = new Set(items.map(item => item.sourcePath).filter(Boolean));
+    setAdminAiQueue(prev =>
+      prev.map(item => {
+        if (itemIds.has(item.id) || (item.sourcePath && itemPaths.has(item.sourcePath))) {
+          return { ...item, status: 'done' };
+        }
+        if (item.status === 'error') return item;
+        return { ...item, status: 'error', error: 'no_segments' };
+      })
+    );
+    setAdminAiStats({
+      processed: items.length,
+      failed: targets.length - items.length
+    });
     showHud(`AI сегменти: ${items.length}`);
   }, [
     activeVideo,
@@ -834,12 +1069,186 @@ export default function useAdmin({
     adminConfig.aiModelPath,
     adminConfig.aiPythonPath,
     applyAiSegments,
+    buildAiQueue,
     fetchAdminJson,
     getExpectedModesForAi,
     overwriteOutputs,
     playlist,
+    resolveAiTargets,
     showHud
   ]);
+
+  const runAdminAiSegmentsRemote = useCallback(async (overrideIds = null) => {
+    const targets = resolveAiTargets(overrideIds);
+    if (targets.length === 0) {
+      showHud("Оберіть відео");
+      return;
+    }
+    const remoteBase = String(adminConfig.aiRemoteUrl || '').trim().replace(/\/+$/, '');
+    if (!remoteBase) {
+      showHud("Вкажіть Colab URL");
+      return;
+    }
+    const fps = Number.isFinite(adminConfig.aiFps) ? adminConfig.aiFps : 1;
+    const minDuration = Number.isFinite(adminConfig.aiMinDuration) ? adminConfig.aiMinDuration : 2;
+    const modeSet = new Set(SEGMENT_MODES.map(mode => mode.id));
+    let failures = 0;
+    const items = [];
+
+    buildAiQueue(targets, 'colab');
+    setAdminAiLoading(true);
+    setAdminAiStats(null);
+    setAdminAiLastRequestAt(Date.now());
+    setAdminAiLastError(null);
+    adminAiAbortRef.current = { aborted: false, controller: null };
+    for (const target of targets) {
+      if (adminAiAbortRef.current.aborted) break;
+      setAiQueueStatus(target.id, { status: 'running', error: null });
+      let fileBlob = null;
+      let fileName = target?.name || 'video.mp4';
+      if (target?.file instanceof Blob) {
+        fileBlob = target.file;
+        if (target.file.name) fileName = target.file.name;
+      } else if (target?.sourcePath) {
+        const base = adminBaseUrl.replace(/\/+$/, '');
+        const url = `${base}/file?path=${encodeURIComponent(target.sourcePath)}`;
+        try {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          fileBlob = await res.blob();
+          fileName = target.sourcePath.split('/').pop() || fileName;
+        } catch (e) {
+          failures += 1;
+          setAiQueueStatus(target.id, { status: 'error', error: 'fetch_failed' });
+          continue;
+        }
+      }
+      if (!fileBlob) {
+        failures += 1;
+        setAiQueueStatus(target.id, { status: 'error', error: 'no_source' });
+        continue;
+      }
+
+      const formData = new FormData();
+      formData.append('video', fileBlob, fileName);
+      formData.append('fps', String(fps));
+      formData.append('min_duration', String(minDuration));
+
+      try {
+        const res = await fetch(`${remoteBase}/predict`, {
+          method: 'POST',
+          body: formData
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data?.ok) {
+          failures += 1;
+          setAiQueueStatus(target.id, { status: 'error', error: 'remote_failed' });
+          continue;
+        }
+        setAdminAiRemoteState({
+          status: 'ok',
+          lastCheckedAt: Date.now(),
+          lastHttp: res.status,
+          lastError: null
+        });
+        const rawSegments = data.segments || {};
+        const allowedModes = getExpectedModesForAi(target);
+        const filtered = {};
+        Object.keys(rawSegments).forEach(label => {
+          if (!modeSet.has(label)) return;
+          if (allowedModes.length > 0 && !allowedModes.includes(label)) return;
+          filtered[label] = rawSegments[label];
+        });
+        items.push({
+          id: target.id,
+          sourcePath: target.sourcePath || '',
+          segments: filtered
+        });
+        setAiQueueStatus(target.id, { status: 'done' });
+      } catch (e) {
+        failures += 1;
+        setAdminAiLastError(String(e?.message || e));
+        setAdminAiRemoteState({
+          status: 'error',
+          lastCheckedAt: Date.now(),
+          lastHttp: null,
+          lastError: String(e?.message || e)
+        });
+        setAiQueueStatus(target.id, { status: 'error', error: 'remote_error' });
+      }
+    }
+    setAdminAiLoading(false);
+    if (adminAiAbortRef.current.aborted) {
+      setAdminAiQueue(prev =>
+        prev.map(item =>
+          item.status === 'running' || item.status === 'pending'
+            ? { ...item, status: 'error', error: 'stopped' }
+            : item
+        )
+      );
+      showHud("AI зупинено");
+      return;
+    }
+    if (items.length === 0) {
+      showHud(failures > 0 ? "AI Colab не відпрацював" : "Немає сегментів");
+      return;
+    }
+    applyAiSegments(items);
+    setAdminAiStats({
+      processed: items.length,
+      failed: failures
+    });
+    showHud(failures > 0 ? `AI Colab: ${items.length}, помилок: ${failures}` : `AI Colab: ${items.length}`);
+  }, [
+    activeVideo,
+    adminBaseUrl,
+    adminConfig.aiFps,
+    adminConfig.aiMinDuration,
+    adminConfig.aiRemoteUrl,
+    applyAiSegments,
+    buildAiQueue,
+    getExpectedModesForAi,
+    playlist,
+    resolveAiTargets,
+    setAiQueueStatus,
+    showHud
+  ]);
+
+  const stopAdminAi = useCallback(() => {
+    adminAiAbortRef.current.aborted = true;
+    if (adminAiAbortRef.current.controller) {
+      adminAiAbortRef.current.controller.abort();
+    }
+    setAdminAiLoading(false);
+    setAdminAiLastError('stopped');
+    setAdminAiQueue(prev =>
+      prev.map(item =>
+        item.status === 'running' || item.status === 'pending'
+          ? { ...item, status: 'error', error: 'stopped' }
+          : item
+      )
+    );
+    showHud("AI зупинено");
+  }, [showHud]);
+
+  const retryAdminAiFailed = useCallback(() => {
+    const failed = adminAiQueue.filter(item => item.status === 'error');
+    if (failed.length === 0) {
+      showHud("Немає помилок");
+      return;
+    }
+    const ids = new Set(failed.map(item => item.id));
+    if (adminAiLastProvider === 'colab') {
+      runAdminAiSegmentsRemote(ids);
+      return;
+    }
+    if (adminAiLastProvider === 'local') {
+      runAdminAiSegments(ids);
+      return;
+    }
+    showHud("Невідомий режим AI");
+  }, [adminAiLastProvider, adminAiQueue, resolveAiTargets, runAdminAiSegments, runAdminAiSegmentsRemote, showHud]);
 
   const runAdminLogoDetection = useCallback(async () => {
     const selected = playlist.filter(p => p.checked);
@@ -964,7 +1373,8 @@ export default function useAdmin({
     }
   }, [fetchAdminJson, showHud]);
 
-  const addVideosFromServer = useCallback(async () => {
+  const addVideosFromServer = useCallback(async (options = {}) => {
+    const { modes = [], snow = 'any', onlySheet = true } = options;
     const data = await fetchAdminJson('/files');
     if (!data?.files) return;
     if (data.files.length === 0) {
@@ -981,8 +1391,15 @@ export default function useAdmin({
     const mergedUpdates = [];
     let skipped = 0;
     let inSheetCount = 0;
+    let filteredOut = 0;
     const unmatched = [];
     const baseDir = data.baseDir || '';
+    const entryHasSnow = entry => {
+      if (!entry) return false;
+      const rawLabels = entry.labels ? String(entry.labels) : '';
+      const normalized = normalizeName(rawLabels);
+      return normalized.includes('snow') || normalized.includes('сніг');
+    };
 
     data.files.forEach(fileInfo => {
       const fileKey = getServerFileKey(
@@ -999,6 +1416,11 @@ export default function useAdmin({
       if (hasSheetEntry) inSheetCount += 1;
       else unmatched.push(fileInfo.name);
 
+      if (onlySheet && !hasSheetEntry) {
+        filteredOut += 1;
+        return;
+      }
+
       const entries = hasSheetEntry ? sheetEntries : [null];
       const orderedEntries = entries
         .map((entry, index) => ({ entry, index }))
@@ -1009,12 +1431,35 @@ export default function useAdmin({
         .map(item => item.entry);
 
       const channels = buildChannelsFromEntries(orderedEntries);
+      const hasSnow = orderedEntries.some(entryHasSnow) || normalizeName(fileInfo.name).includes('snow');
+
+      if (modes.length > 0 && !channels.some(channel => modes.includes(channel.mode))) {
+        filteredOut += 1;
+        return;
+      }
+      if (snow === 'only' && !hasSnow) {
+        filteredOut += 1;
+        return;
+      }
+      if (snow === 'exclude' && hasSnow) {
+        filteredOut += 1;
+        return;
+      }
       const existingItem = existingByFileKey.get(fileKey);
 
       if (existingItem) {
         const merged = mergeChannelLists(existingItem.channels, channels);
-        if (merged.length > 0 && merged.length !== (existingItem.channels || []).length) {
-          const updated = { ...existingItem, channels: merged, sheetHasBoth: existingItem.sheetHasBoth || sheetHasBoth };
+        const nextHasSnow = existingItem.hasSnow || hasSnow;
+        if (
+          (merged.length > 0 && merged.length !== (existingItem.channels || []).length) ||
+          nextHasSnow !== existingItem.hasSnow
+        ) {
+          const updated = {
+            ...existingItem,
+            channels: merged,
+            sheetHasBoth: existingItem.sheetHasBoth || sheetHasBoth,
+            hasSnow: nextHasSnow
+          };
           existingByFileKey.set(fileKey, updated);
           mergedUpdates.push(updated);
         }
@@ -1031,6 +1476,7 @@ export default function useAdmin({
         checked: false,
         suffix: primarySuffix,
         notRelevant: false,
+        hasSnow,
         fileKey,
         type: fileInfo.type || '',
         size: fileInfo.size || 0,
@@ -1053,6 +1499,7 @@ export default function useAdmin({
       skipped,
       inSheet: inSheetCount,
       unmatched,
+      filteredOut,
       total: data.files.length
     });
 
@@ -1080,7 +1527,7 @@ export default function useAdmin({
       }
     }
     if (!currentId && dedupedList[0]) setCurrentId(dedupedList[0].id);
-    setAdminImportStats({ added: newVideos.length, skipped });
+    setAdminImportStats({ added: newVideos.length, skipped, filteredOut });
     if (newVideos.length === 0) {
       showHud("Нових файлів немає");
       return;
@@ -1128,6 +1575,12 @@ export default function useAdmin({
     loadAdminConfig();
     loadAdminJobs();
   }, [adminOpen, loadAdminConfig, loadAdminJobs]);
+
+  useEffect(() => {
+    if (!adminOpen) return;
+    if (!adminConfig.aiRemoteUrl) return;
+    pingAdminAiRemote();
+  }, [adminOpen, adminConfig.aiRemoteUrl, pingAdminAiRemote]);
 
   useEffect(() => {
     if (!adminOpen) setAdminHistoryOpen(false);
@@ -1230,8 +1683,14 @@ export default function useAdmin({
     adminLoading,
     adminAiLoading,
     adminAiStats,
+    adminAiQueue,
+    adminAiLastRequestAt,
+    adminAiLastError,
+    adminAiLastProvider,
+    adminAiRemoteState,
     adminLogoLoading,
     adminLogoStats,
+    adminSyncState,
     adminJobProgress,
     getJobMeta,
     getJobProgress,
@@ -1242,13 +1701,18 @@ export default function useAdmin({
     loadAdminConfig,
     saveAdminConfig,
     saveAdminSnapshot,
+    applySnapshotPayload,
     applyAdminSnapshot,
     loadAdminJobs,
     loadAdminJob,
     loadSheetMap,
     runAdminFfmpeg,
     runAdminAiSegments,
+    runAdminAiSegmentsRemote,
     runAdminLogoDetection,
+    pingAdminAiRemote,
+    stopAdminAi,
+    retryAdminAiFailed,
     stopAdminJob,
     pickAdminFolder,
     addVideosFromServer,

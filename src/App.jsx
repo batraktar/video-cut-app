@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   DEFAULT_EDIT_STATE,
   MAX_HISTORY,
@@ -9,20 +9,15 @@ import {
   SUFFIX_PRESETS
 } from './lib/editorConstants';
 import {
-  buildChannelsFromEntries,
   clamp,
-  entriesHaveBoth,
   filterElementsForMode,
-  getDefaultSegmentSets,
-  getEntryOrder,
-  getFileKey,
   getFileKeyCounts,
   getSegmentOffsetForTime,
   getSegmentsForMode,
+  getSuffixForSegmentMode,
   getTimeForSegmentOffset,
   loadFromStorage,
   mergeChannelLists,
-  normalizeCropPx,
   normalizeName,
   normalizeSegmentSets,
   parseNumericInput,
@@ -32,23 +27,46 @@ import {
   saveToStorage,
   updateSegmentsForMode
 } from './lib/editorUtils';
+import { buildFfmpegLinesFor } from './lib/ffmpeg/buildFfmpegLinesFor';
+import useExportProcessing from './features/export/useExportProcessing';
+import useBatchAutoExport from './features/export/useBatchAutoExport';
+import {
+  getExpectedModesForAi,
+  getFileKeyVariants,
+  getSegmentModeForVideo,
+  isAnalogVariant,
+  isThermalVariant
+} from './features/editor/videoMeta';
+import useEditorHotkeys from './features/editor/useEditorHotkeys';
+import { normalizeHotkeys } from './features/editor/hotkeys';
+import usePlaylistPersistence from './features/playlist/usePlaylistPersistence';
+import usePlaylistActions from './features/playlist/usePlaylistActions';
+import { buildEditFromSaved, getSavedEditForVideo } from './features/playlist/editRestore';
 import AppOverlays from './components/AppOverlays';
 import EditorLayout from './components/EditorLayout';
 import useAdmin from './hooks/useAdmin';
 import usePlaylist from './hooks/usePlaylist';
 
 export default function App() {
-  // --- GEMINI API CONFIG ---
-  const apiKey = "";
-
   // --- STATE ---
   const [edits, setEdits] = useState({});
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [processingJob, setProcessingJob] = useState(null);
-  const [notifications, setNotifications] = useState([]);
-  const [processingSrc, setProcessingSrc] = useState(null);
+  const isSnowVideo = useCallback(video => {
+    if (!video) return false;
+    if (video.hasSnow) return true;
+    const edit = edits?.[video.id];
+    const sets = edit?.segmentSets;
+    if (sets && typeof sets === 'object') {
+      return Object.values(sets).some(
+        list => Array.isArray(list) && list.some(seg => !!seg?.isSnow)
+      );
+    }
+    const flat = edit?.segments;
+    return Array.isArray(flat) && flat.some(seg => !!seg?.isSnow);
+  }, [edits]);
+  const [hotkeys, setHotkeys] = useState(() =>
+    normalizeHotkeys(loadFromStorage(STORAGE_KEYS.hotkeys, null))
+  );
+  const [snowSpeed, setSnowSpeed] = useState(1);
   const [applyModalOpen, setApplyModalOpen] = useState(false);
   const [ffmpegModalOpen, setFfmpegModalOpen] = useState(false);
   const [ffmpegCommand, setFfmpegCommand] = useState('');
@@ -63,6 +81,11 @@ export default function App() {
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [focusSideOpen, setFocusSideOpen] = useState(false);
   const [overwriteOutputs, setOverwriteOutputs] = useState(false);
+  const [serverHydrationState, setServerHydrationState] = useState('pending');
+  const [importPickerRequest, setImportPickerRequest] = useState(0);
+  const [autoSyncAllowed, setAutoSyncAllowed] = useState(false);
+  const hotkeyCaptureRef = useRef(false);
+  const serverHydratedRef = useRef(false);
   const {
     playlist,
     setPlaylist,
@@ -87,6 +110,7 @@ export default function App() {
     isAllSelected,
     allCount,
     multiCount,
+    snowCount,
     playlistVisibleItems,
     playlistPaddingTop,
     playlistPaddingBottom,
@@ -97,7 +121,7 @@ export default function App() {
     selectVisible,
     reorderPlaylist,
     handlePlaylistScroll
-  } = usePlaylist({ suffixPresets: SUFFIX_PRESETS, getFileKeyCounts });
+  } = usePlaylist({ suffixPresets: SUFFIX_PRESETS, getFileKeyCounts, isSnowVideo });
   const [isCanvasExpanded, setIsCanvasExpanded] = useState(false);
   const [focusCanvasHeight, setFocusCanvasHeight] = useState(() => {
     if (typeof window === 'undefined') return 600;
@@ -111,13 +135,6 @@ export default function App() {
   const [batchSuffix, setBatchSuffix] = useState('');
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [batchQueue, setBatchQueue] = useState([]);
-  const [batchTotal, setBatchTotal] = useState(0); // For progress tracking
-
-  // AI State
-  const [aiPrompt, setAiPrompt] = useState('');
-  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
-  const [showAiInput, setShowAiInput] = useState(false);
-  const [aiTip, setAiTip] = useState(null);
 
   // Clipboard
   const [copiedAttributes, setCopiedAttributes] = useState(null);
@@ -136,16 +153,11 @@ export default function App() {
 
   // Refs
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const processingVideoRef = useRef(null);
   const overlayRef = useRef(null);
   const viewportRef = useRef(null);
   const timelineRef = useRef(null);
   const segmentStartRef = useRef(null);
   const segmentEndRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
-  const stopLoopRef = useRef(null);
-  const cancelProcessingRef = useRef(false);
   const altDownRef = useRef(false);
   const altUsedWithOtherRef = useRef(false);
   const playSegmentsOnlyRef = useRef(false);
@@ -174,6 +186,13 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [segmentDraft, setSegmentDraft] = useState({ start: null, end: null });
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
+  const autoSaveEnabledRef = useRef(true);
+  useEffect(() => {
+    autoSaveEnabledRef.current = autoSaveEnabled;
+  }, [autoSaveEnabled]);
+  const timeUpdateRafRef = useRef(null);
+  const lastTimeUpdateRef = useRef(0);
 
   // --- HELPERS ---
   const currentEdit = edits[currentId] || DEFAULT_EDIT_STATE;
@@ -394,290 +413,7 @@ export default function App() {
     const meta = SEGMENT_MODES.find(item => item.id === mode);
     return meta ? [meta] : [];
   };
-  const buildEditFromSaved = saved => {
-    if (!saved) return null;
-    const segmentMode = saved.segmentMode || 'digital';
-    const segmentSets = normalizeSegmentSets(saved.segmentSets, saved.segments, segmentMode);
-    const meta = saved.meta || {};
-    const metaWidth = Number.isFinite(meta.width) ? meta.width : 0;
-    const metaHeight = Number.isFinite(meta.height) ? meta.height : 0;
-    const metaDuration = Number.isFinite(meta.duration) ? meta.duration : saved.duration || 0;
-    return {
-      ...DEFAULT_EDIT_STATE,
-      trim: saved.trim ? { ...saved.trim } : DEFAULT_EDIT_STATE.trim,
-      crop: saved.crop ? { ...saved.crop } : DEFAULT_EDIT_STATE.crop,
-      elements: Array.isArray(saved.elements) ? saved.elements.map(el => ({ ...el })) : [],
-      segments: segmentSets[segmentMode] || [],
-      segmentMode,
-      segmentSets,
-      viewMode: saved.viewMode || 'editor',
-      processedUrl: null,
-      processedExt: null,
-      selectedId: null,
-      history: [],
-      future: [],
-      meta: { duration: metaDuration, width: metaWidth, height: metaHeight }
-    };
-  };
-  const getSavedEditForVideo = (savedEdits, video, fileKeyCounts) => {
-    if (!savedEdits || !video) return null;
-    if (savedEdits[video.id]) return savedEdits[video.id];
-    if (video.fileKey && savedEdits[video.fileKey]) return savedEdits[video.fileKey];
-    if (fileKeyCounts?.get(video.fileKey) === 1) return savedEdits[video.fileKey] || null;
-    return null;
-  };
   const savedEditsRef = useRef(loadFromStorage(STORAGE_KEYS.edits, {}));
-  const dbRef = useRef(null);
-  const editsLoadedRef = useRef(false);
-
-  const openDb = () =>
-    new Promise((resolve, reject) => {
-      if (typeof indexedDB === 'undefined') {
-        reject(new Error('IndexedDB недоступна'));
-        return;
-      }
-      const request = indexedDB.open('video-cut-db', 2);
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains('videos')) {
-          db.createObjectStore('videos', { keyPath: 'fileKey' });
-        }
-        if (!db.objectStoreNames.contains('edits')) {
-          db.createObjectStore('edits', { keyPath: 'id' });
-        }
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-
-  const getDb = async () => {
-    if (dbRef.current) return dbRef.current;
-    const db = await openDb();
-    dbRef.current = db;
-    return db;
-  };
-
-  const idbPutVideo = async record => {
-    const db = await getDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('videos', 'readwrite');
-      tx.objectStore('videos').put(record);
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => reject(tx.error);
-    });
-  };
-
-  const idbGetVideo = async fileKey => {
-    const db = await getDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('videos', 'readonly');
-      const req = tx.objectStore('videos').get(fileKey);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
-    });
-  };
-
-  const idbDeleteVideo = async fileKey => {
-    const db = await getDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('videos', 'readwrite');
-      tx.objectStore('videos').delete(fileKey);
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => reject(tx.error);
-    });
-  };
-
-  const idbSaveEdit = async (id, snapshot) => {
-    if (!id) return;
-    const db = await getDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('edits', 'readwrite');
-      tx.objectStore('edits').put({ id, snapshot });
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => reject(tx.error);
-    });
-  };
-
-  const idbLoadEdits = async () => {
-    const db = await getDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('edits', 'readonly');
-      const req = tx.objectStore('edits').getAll();
-      req.onsuccess = () => {
-        const result = {};
-        (req.result || []).forEach(item => {
-          if (item?.id && item.snapshot) result[item.id] = item.snapshot;
-        });
-        resolve(result);
-      };
-      req.onerror = () => reject(req.error);
-    });
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    const hydrateFromIdb = async () => {
-      if (editsLoadedRef.current) return;
-      try {
-        const idbEdits = await idbLoadEdits();
-        if (cancelled || !idbEdits || Object.keys(idbEdits).length === 0) {
-          editsLoadedRef.current = true;
-          return;
-        }
-        const current = savedEditsRef.current || {};
-        if (Object.keys(current).length === 0) {
-          savedEditsRef.current = idbEdits;
-          saveToStorage(STORAGE_KEYS.edits, idbEdits);
-          setEdits(prev => {
-            const next = { ...prev };
-            Object.entries(idbEdits).forEach(([key, snap]) => {
-              const restored = buildEditFromSaved(snap);
-              if (restored) next[key] = restored;
-            });
-            return next;
-          });
-        }
-      } catch (e) {
-        // ignore
-      } finally {
-        editsLoadedRef.current = true;
-      }
-    };
-    hydrateFromIdb();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    const savedList = loadFromStorage(STORAGE_KEYS.playlist, []);
-    if (!Array.isArray(savedList) || savedList.length === 0) return;
-    const normalized = savedList
-      .filter(item => item?.fileKey)
-      .map(item => {
-        const fallbackMode = resolveSegmentModeFromMeta(item.sheetMode, item.sheetCameraType) ||
-          resolveSegmentModeFromSuffix(item.suffix);
-        const fallbackChannels = fallbackMode
-          ? [
-            {
-              mode: fallbackMode,
-              suffix: item.suffix || resolveSuffixFromMode(item.sheetMode, item.sheetCameraType),
-              sheetMode: item.sheetMode || '',
-              sheetCameraType: item.sheetCameraType || '',
-              sheetStatus: item.sheetStatus || '',
-              sheetRow: item.sheetRow || null
-            }
-          ]
-          : [];
-        return {
-          ...item,
-          url: null,
-          file: null,
-          checked: false,
-          isLoading: false,
-          suffix: item.suffix || '',
-          sheetRow: item.sheetRow || null,
-          sheetMode: item.sheetMode || '',
-          sheetCameraType: item.sheetCameraType || '',
-          sheetStatus: item.sheetStatus || '',
-          notRelevant: !!item.notRelevant,
-          source: item.source || '',
-          sourcePath: item.sourcePath || '',
-          sourceBaseDir: item.sourceBaseDir || '',
-          channels: Array.isArray(item.channels) ? item.channels : fallbackChannels
-        };
-      });
-    const { playlist: deduped } = dedupePlaylistAndEdits(normalized, {});
-    const fileKeyCounts = getFileKeyCounts(deduped);
-    const savedEdits = savedEditsRef.current || {};
-    setPlaylist(deduped);
-    setEdits(prev => {
-      const next = { ...prev };
-      deduped.forEach(item => {
-        const restored = buildEditFromSaved(
-          getSavedEditForVideo(savedEdits, item, fileKeyCounts)
-        );
-        if (restored) next[item.id] = restored;
-      });
-      return next;
-    });
-    if (!currentId && deduped[0]) setCurrentId(deduped[0].id);
-  }, []);
-
-  // --- GEMINI FUNCTIONS ---
-  const generateAiSuffix = async () => {
-    if (!aiPrompt.trim()) {
-      showHud("Введіть опис для AI");
-      return;
-    }
-    setIsGeneratingAI(true);
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `Generate a short, concise filename suffix (starting with underscore, max 15 chars, alphanumeric only, no spaces) based on this video description: "${aiPrompt}". Return ONLY the suffix.`
-                  }
-                ]
-              }
-            ]
-          })
-        }
-      );
-      const data = await response.json();
-      const suffix =
-        data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ||
-        `_${aiPrompt.replace(/\s+/g, '_').substr(0, 10)}`;
-      const cleanSuffix = suffix.replace(/[^a-zA-Z0-9_]/g, '');
-      const nextSuffix = cleanSuffix.startsWith('_') ? cleanSuffix : `_${cleanSuffix}`;
-      setVideoSuffix(currentId, nextSuffix);
-      showHud("Суфікс згенеровано! ✨");
-      setShowAiInput(false);
-      setAiPrompt('');
-    } catch (e) {
-      showHud("Помилка AI");
-    } finally {
-      setIsGeneratingAI(false);
-    }
-  };
-
-  const getAiTip = async () => {
-    setIsGeneratingAI(true);
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `Give me one short, useful tip about video editing, cropping, or using overlays for social media content. Keep it under 20 words. Language: Ukrainian.`
-                  }
-                ]
-              }
-            ]
-          })
-        }
-      );
-      const data = await response.json();
-      setAiTip(data.candidates?.[0]?.content?.parts?.[0]?.text);
-      setTimeout(() => setAiTip(null), 6000);
-    } catch (e) {
-      setAiTip("Експериментуйте з ритмом монтажу! (AI Offline)");
-      setTimeout(() => setAiTip(null), 3000);
-    } finally {
-      setIsGeneratingAI(false);
-    }
-  };
 
   // --- STATE MANAGEMENT ---
   const pushToHistory = (newEdit, oldEdit) => {
@@ -833,15 +569,6 @@ export default function App() {
     setActiveSegmentMode(next.id);
     showHud(`Сегменти: ${next.label}`);
   };
-  const addNotification = note => {
-    setNotifications(prev => [...prev, note]);
-  };
-  const updateNotification = (id, updates) => {
-    setNotifications(prev => prev.map(n => (n.id === id ? { ...n, ...updates } : n)));
-  };
-  const removeNotification = id => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
-  };
   const buildRcloneCopyLine = outputPath =>
     uploadToDrive ? `rclone copy "${outputPath}" "${RCLONE_REMOTE}:${RCLONE_FOLDER}"` : null;
   const startSidebarResize = e => {
@@ -865,63 +592,6 @@ export default function App() {
     };
     document.body.style.cursor = 'ns-resize';
     document.body.style.userSelect = 'none';
-  };
-  const getFileKeyVariants = list => {
-    const variants = new Map();
-    (list || []).forEach(item => {
-      if (!item?.fileKey) return;
-      const entry = variants.get(item.fileKey) || { hasThermal: false };
-      if (isThermalVariant(item)) entry.hasThermal = true;
-      variants.set(item.fileKey, entry);
-    });
-    return variants;
-  };
-  const isAnalogVariant = video => {
-    if (video?.channelMode) return normalizeName(video.channelMode).includes('analog');
-    if (Array.isArray(video?.channels) && video.channels.length > 0) {
-      return video.channels.some(channel => normalizeName(channel.mode).includes('analog'));
-    }
-    const mode = normalizeName(video?.sheetMode);
-    if (mode.includes('analog')) return true;
-    const suffix = normalizeName(video?.suffix);
-    return suffix.includes('analog');
-  };
-  const isThermalVariant = video => {
-    if (video?.channelMode) return normalizeName(video.channelMode).includes('thermal');
-    if (Array.isArray(video?.channels) && video.channels.length > 0) {
-      return video.channels.some(channel => normalizeName(channel.mode).includes('thermal'));
-    }
-    const camera = normalizeName(video?.sheetCameraType);
-    if (camera.includes('thermal') || camera.includes('infrared')) return true;
-    const suffix = normalizeName(video?.suffix);
-    return suffix.includes('thermal');
-  };
-  const getSegmentModeForVideo = video => {
-    if (video?.channelMode) return video.channelMode;
-    if (Array.isArray(video?.channels) && video.channels.length > 0) {
-      return video.channels[0].mode || 'digital';
-    }
-    const metaMode = resolveSegmentModeFromMeta(video?.sheetMode, video?.sheetCameraType);
-    if (metaMode) return metaMode;
-    const suffixMode = resolveSegmentModeFromSuffix(video?.suffix);
-    if (suffixMode) return suffixMode;
-    const isThermal = isThermalVariant(video);
-    const isAnalog = isAnalogVariant(video);
-    if (isThermal && isAnalog) return 'thermal_analog';
-    if (isThermal && !isAnalog) return 'thermal_digital';
-    if (!isThermal && isAnalog) return 'analog';
-    return 'digital';
-  };
-  const getExpectedModesForAi = video => {
-    if (!video) return [];
-    if (video.channelMode) return [video.channelMode];
-    if (Array.isArray(video.channels) && video.channels.length > 0) {
-      return video.channels.map(channel => channel.mode).filter(Boolean);
-    }
-    const metaMode = resolveSegmentModeFromMeta(video.sheetMode, video.sheetCameraType);
-    const suffixMode = resolveSegmentModeFromSuffix(video.suffix);
-    const hint = metaMode || suffixMode;
-    return hint ? [hint] : [];
   };
   const buildChannelSuffixChips = video => {
     if (!video) return [];
@@ -1009,213 +679,20 @@ export default function App() {
     if (variants?.hasThermal) return isThermalVariant(video);
     return isAnalogVariant(video);
   };
-  const buildFfmpegLinesFor = (video, edit, options = {}) => {
-    const outputDir = options.outputDir || getVideoOutputDir(video);
-    const useBatchSuffix = options.useBatchSuffix || false;
-    const allowRenameOriginal = options.allowRenameOriginal !== false;
-    const doneDir = options.doneDir || getVideoDoneDir(video);
-    const overwriteOutput = options.overwriteOutput;
-    const overwriteFlag =
-      overwriteOutput === true ? '-y ' : overwriteOutput === false ? '-n ' : '';
-    if (!video || !edit) return { lines: [], usesTemp: false, error: 'missing' };
-    const meta = edit.meta || {};
-    const crop = edit.crop || DEFAULT_EDIT_STATE.crop;
-    const segmentMode = options.segmentMode || getSegmentModeForVideo(video);
-    const elements = filterElementsForMode(edit.elements, segmentMode);
-    const hasCrop = !!(crop.t || crop.b || crop.l || crop.r);
-    const hasElements = elements.length > 0;
-    const hasFilters = hasCrop || hasElements;
-    const safeDuration =
-      Number.isFinite(meta.duration) && meta.duration > 0 ? meta.duration : null;
-    const clampTime = val =>
-      safeDuration ? clamp(val, 0, safeDuration) : Math.max(0, val);
-    const modeSegments = getSegmentsForMode(edit, segmentMode);
-    const baseSegments =
-      Array.isArray(modeSegments) && modeSegments.length > 0
-        ? modeSegments
-        : [
-          {
-            start: edit.trim?.start ?? 0,
-            end: edit.trim?.end ?? safeDuration ?? 0
-          }
-        ];
-    const exportSegments = baseSegments
-      .map(seg => {
-        const rawStart = Number.isFinite(seg.start) ? seg.start : 0;
-        const rawEnd =
-          Number.isFinite(seg.end) ? seg.end : safeDuration ?? rawStart + 0.1;
-        const start = clampTime(Math.min(rawStart, rawEnd));
-        const end = clampTime(Math.max(rawStart, rawEnd));
-        return { start, end };
-      })
-      .filter(seg => seg.end > seg.start);
-    if (exportSegments.length === 0) exportSegments.push({ start: 0, end: safeDuration ?? 0 });
-    const sourcePath = video.sourcePath || video.name || 'input.mp4';
-    const fileName = sourcePath.split('/').pop() || sourcePath;
-    const dot = fileName.lastIndexOf('.');
-    const baseName = dot > 0 ? fileName.slice(0, dot) : fileName;
-    const ext = dot > 0 ? fileName.slice(dot + 1) : 'mp4';
-    const perVideoSuffix = video?.suffix || '';
-    const extraBatchSuffix = useBatchSuffix && batchSuffix ? batchSuffix : '';
-    const suffix = `${perVideoSuffix}${extraBatchSuffix}`;
-    const outputName = `${baseName}${suffix}.${ext}`;
-    const inputPath = sourcePath.startsWith('./') ? sourcePath : `./${sourcePath}`;
-    const outputPath = `${outputDir}/${outputName}`;
-    if (video.notRelevant) {
-      const notRelevantPath = `${doneDir}/${baseName}_not_relevant.${ext}`;
-      const moveLine = `[ -e "${inputPath}" ] && [ ! -e "${notRelevantPath}" ] && mkdir -p "${doneDir}" && mv "${inputPath}" "${notRelevantPath}"`;
-      return {
-        lines: [moveLine],
-        usesTemp: false,
-        needsOutputDir: false,
-        outputDir,
-        doneDir
-      };
-    }
-    const sourceDonePath =
-      allowRenameOriginal && !baseName.endsWith('_done')
-        ? `${doneDir}/${baseName}_done.${ext}`
-        : null;
-    const renameLine = sourceDonePath
-      ? `[ -f "${outputPath}" ] && [ -e "${inputPath}" ] && [ ! -e "${sourceDonePath}" ] && mkdir -p "${doneDir}" && mv "${inputPath}" "${sourceDonePath}"`
-      : null;
-    if (!hasFilters) {
-      if (exportSegments.length === 1) {
-        const seg = exportSegments[0];
-        const rcloneLine = buildRcloneCopyLine(outputPath);
-        return {
-          lines: [
-            `ffmpeg ${overwriteFlag}-ss ${seg.start.toFixed(3)} -to ${seg.end.toFixed(
-              3
-            )} -i "${inputPath}" -c copy -an -movflags +faststart "${outputPath}"`,
-            ...(rcloneLine ? [rcloneLine] : []),
-            ...(renameLine ? [renameLine] : [])
-          ],
-          usesTemp: false,
-          needsOutputDir: true,
-          outputDir,
-          doneDir
-        };
-      }
-      const tmpDir = `${outputDir}/_tmp`;
-      const listPath = `${tmpDir}/${baseName}_list.txt`;
-      const segmentFiles = exportSegments.map((seg, idx) => ({
-        path: `${tmpDir}/${baseName}_seg${idx + 1}.${ext}`,
-        start: seg.start,
-        end: seg.end
-      }));
-      const listLines = segmentFiles.map(seg => `file '${seg.path.split('/').pop()}'`).join('\\n');
-      const rcloneLine = buildRcloneCopyLine(outputPath);
-      const lines = [
-        ...segmentFiles.map(
-          seg =>
-            `ffmpeg ${overwriteFlag}-ss ${seg.start.toFixed(3)} -to ${seg.end.toFixed(
-              3
-            )} -i "${inputPath}" -c copy -an "${seg.path}"`
-        ),
-        `printf "${listLines}\\n" > "${listPath}"`,
-        `ffmpeg ${overwriteFlag}-f concat -safe 0 -i "${listPath}" -c copy -an "${outputPath}"`,
-        ...(rcloneLine ? [rcloneLine] : []),
-        `rm -f "${listPath}" ${segmentFiles.map(seg => `"${seg.path}"`).join(' ')}`,
-        ...(renameLine ? [renameLine] : [])
-      ];
-      return {
-        lines,
-        usesTemp: true,
-        needsOutputDir: true,
-        outputDir,
-        tmpDir,
-        doneDir
-      };
-    }
-    if (!meta.width || !meta.height) {
-      return { lines: [], usesTemp: false, error: 'missingMeta' };
-    }
-    const cropPx = normalizeCropPx(crop, meta);
-    const cropX = cropPx.x;
-    const cropY = cropPx.y;
-    const cropW = cropPx.w;
-    const cropH = cropPx.h;
-    if (hasCrop && (!cropW || !cropH)) return { lines: [], usesTemp: false, error: 'invalidCrop' };
-    const filters = [];
-    elements.forEach(el => {
-      const elStart = clampTime(Number.isFinite(el.startTime) ? el.startTime : 0);
-      const elEnd = clampTime(
-        Number.isFinite(el.endTime) ? el.endTime : safeDuration ?? elStart + 0.1
-      );
-      if (elEnd <= elStart) return;
-      const elRealX = (el.x / 100) * meta.width;
-      const elRealY = (el.y / 100) * meta.height;
-      const elRealW = (el.w / 100) * meta.width;
-      const elRealH = (el.h / 100) * meta.height;
-      const rawX = Math.round(elRealX);
-      const rawY = Math.round(elRealY);
-      const rawW = Math.round(elRealW);
-      const rawH = Math.round(elRealH);
-      const maxW = meta.width;
-      const maxH = meta.height;
-      const x = clamp(rawX, 0, Math.max(0, maxW - 1));
-      const y = clamp(rawY, 0, Math.max(0, maxH - 1));
-      const w = clamp(rawW, 1, Math.max(1, maxW - x));
-      const h = clamp(rawH, 1, Math.max(1, maxH - y));
-      if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
-      const color =
-        typeof el.color === 'string' && el.color.startsWith('#')
-          ? `0x${el.color.slice(1)}`
-          : '0x000000';
-      const thickness = el.isOutline ? Math.max(1, Math.round(el.thickness || 1)) : 'fill';
-      filters.push(
-        `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${color}@1:t=${thickness}:enable='between(t,${elStart.toFixed(
-          3
-        )},${elEnd.toFixed(3)})'`
-      );
+  const ensureModeVariants = (video, variants, edit) => {
+    const existing = new Set(variants.map(item => item.channelMode).filter(Boolean));
+    const next = [...variants];
+    SEGMENT_MODES.forEach(mode => {
+      if (existing.has(mode.id)) return;
+      const segs = getSegmentsForMode(edit, mode.id);
+      if (!Array.isArray(segs) || segs.length === 0) return;
+      next.push({
+        ...video,
+        channelMode: mode.id,
+        suffix: getSuffixForSegmentMode(mode.id)
+      });
     });
-    if (hasCrop) {
-      filters.push(`crop=${cropW}:${cropH}:${cropX}:${cropY}`);
-    }
-    const filterLines = [];
-    if (filters.length > 0) filterLines.push(`[0:v]${filters.join(',')}[vbase]`);
-    else filterLines.push('[0:v]null[vbase]');
-    const splitLabels =
-      exportSegments.length > 1
-        ? exportSegments.map((_, index) => `vs${index}`)
-        : ['vbase'];
-    if (exportSegments.length > 1) {
-      filterLines.push(
-        `[vbase]split=${exportSegments.length}${splitLabels.map(label => `[${label}]`).join('')}`
-      );
-    }
-    const segmentLabels = exportSegments.map((seg, index) => {
-      const label = `v${index}`;
-      const source = splitLabels[index] || 'vbase';
-      filterLines.push(
-        `[${source}]trim=start=${seg.start.toFixed(3)}:end=${seg.end.toFixed(
-          3
-        )},setpts=PTS-STARTPTS[${label}]`
-      );
-      return label;
-    });
-    let outputLabel = segmentLabels[0];
-    if (segmentLabels.length > 1) {
-      outputLabel = 'vout';
-      filterLines.push(
-        `${segmentLabels.map(label => `[${label}]`).join('')}concat=n=${segmentLabels.length
-        }:v=1:a=0[${outputLabel}]`
-      );
-    }
-    const graph = filterLines.join(';');
-    const rcloneLine = buildRcloneCopyLine(outputPath);
-    return {
-      lines: [
-        `ffmpeg ${overwriteFlag}-i "${inputPath}" -filter_complex "${graph}" -map "[${outputLabel}]" -an -c:v libx264 -crf 18 -preset slow -movflags +faststart "${outputPath}"`,
-        ...(rcloneLine ? [rcloneLine] : []),
-        ...(renameLine ? [renameLine] : [])
-      ],
-      usesTemp: false,
-      needsOutputDir: true,
-      outputDir,
-      doneDir
-    };
+    return next;
   };
   const buildFfmpegCommand = () => {
     if (!activeVideo) return '';
@@ -1223,31 +700,77 @@ export default function App() {
     const currentList = playlistRef.current.length ? playlistRef.current : playlist;
     const fileKeyCounts = getFileKeyCounts(currentList);
     const fileKeyVariants = getFileKeyVariants(currentList);
-    const variants = getVideoChannelVariants(activeVideo);
+    const variants = ensureModeVariants(
+      activeVideo,
+      getVideoChannelVariants(activeVideo),
+      edit
+    );
     const lines = [];
     const outputDirs = new Set();
     const tmpDirs = new Set();
+    let finalRenameLine = null;
+    const splitBySnow = (segments, mode) => {
+      const supportsSnow = true;
+      if (!Array.isArray(segments) || segments.length === 0) {
+        return { supportsSnow, hasAny: false, normal: [], snow: [] };
+      }
+      const snow = segments.filter(seg => !!seg?.isSnow);
+      const normal = segments.filter(seg => !seg?.isSnow);
+      return { supportsSnow, hasAny: true, normal, snow };
+    };
     variants.forEach(variant => {
-      const allowRenameOriginal = allowDoneForVideo(variant, fileKeyCounts, fileKeyVariants);
-      const result = buildFfmpegLinesFor(variant, edit, {
-        useBatchSuffix: false,
-        allowRenameOriginal,
-        overwriteOutput: overwriteOutputs,
-        segmentMode: variant.channelMode
+      const modeSegments = getSegmentsForMode(edit, variant.channelMode);
+      const { supportsSnow, hasAny, normal, snow } = splitBySnow(modeSegments, variant.channelMode);
+      const jobs = [];
+      if (!hasAny) {
+        jobs.push({ video: variant, segmentsOverride: undefined, labelSuffix: '' });
+      } else {
+        if (normal.length > 0) jobs.push({ video: variant, segmentsOverride: normal, labelSuffix: '' });
+        if (supportsSnow && snow.length > 0) {
+          jobs.push({
+            video: { ...variant, suffix: `${variant.suffix || ''}_snow` },
+            segmentsOverride: snow,
+            labelSuffix: 'snow'
+          });
+        }
+      }
+      jobs.forEach(job => {
+        const allowRenameOriginal = allowDoneForVideo(job.video, fileKeyCounts, fileKeyVariants);
+        const result = buildFfmpegLinesFor(job.video, edit, {
+          useBatchSuffix: false,
+          allowRenameOriginal,
+          overwriteOutput: overwriteOutputs,
+          segmentMode: variant.channelMode,
+          segmentsOverride: job.segmentsOverride,
+          batchSuffix,
+          getVideoOutputDir,
+          getVideoDoneDir,
+          getSegmentModeForVideo,
+          buildRcloneCopyLine,
+          includeRenameLine: false
+        });
+        if (result.error) return;
+        if (result.renameLine) finalRenameLine = result.renameLine;
+        if (result.needsOutputDir !== false) {
+          const outDir = result.outputDir || 'cutted';
+          outputDirs.add(outDir);
+          if (result.usesTemp) tmpDirs.add(result.tmpDir || `${outDir}/_tmp`);
+        }
+        if (variants.length > 1 || jobs.length > 1) {
+          const label = SEGMENT_MODES.find(mode => mode.id === variant.channelMode)?.label;
+          const suffixLabel = job.video.suffix || variant.suffix || 'без суфіксу';
+          lines.push(
+            `# ${variant.name || variant.id} (${label || suffixLabel}${job.labelSuffix ? ` • ${job.labelSuffix}` : ''})`
+          );
+        }
+        lines.push(...result.lines);
+        lines.push('');
       });
-      if (result.error) return;
-      if (result.needsOutputDir !== false) {
-        const outDir = result.outputDir || 'cutted';
-        outputDirs.add(outDir);
-        if (result.usesTemp) tmpDirs.add(result.tmpDir || `${outDir}/_tmp`);
-      }
-      if (variants.length > 1) {
-        const label = SEGMENT_MODES.find(mode => mode.id === variant.channelMode)?.label;
-        lines.push(`# ${variant.name || variant.id} (${label || variant.suffix || 'без суфіксу'})`);
-      }
-      lines.push(...result.lines);
-      lines.push('');
     });
+    if (finalRenameLine) {
+      lines.push(finalRenameLine);
+      lines.push('');
+    }
     if (lines.length === 0) return '';
     const header = [
       ...Array.from(outputDirs).map(dir => `mkdir -p "${dir}"`),
@@ -1280,30 +803,64 @@ export default function App() {
     const tmpDirs = new Set();
     selected.forEach(video => {
       const edit = edits[video.id] || DEFAULT_EDIT_STATE;
-      const variants = getVideoChannelVariants(video);
+      const variants = ensureModeVariants(video, getVideoChannelVariants(video), edit);
+      let finalRenameLine = null;
       variants.forEach(variant => {
-        const allowRenameOriginal = allowDoneForVideo(variant, fileKeyCounts, fileKeyVariants);
-        const result = buildFfmpegLinesFor(variant, edit, {
-          useBatchSuffix: true,
-          allowRenameOriginal,
-          overwriteOutput: overwriteOutputs,
-          segmentMode: variant.channelMode
+        const modeSegments = getSegmentsForMode(edit, variant.channelMode);
+        const supportsSnow = true;
+        const snow = Array.isArray(modeSegments) ? modeSegments.filter(seg => !!seg?.isSnow) : [];
+        const normal = Array.isArray(modeSegments) ? modeSegments.filter(seg => !seg?.isSnow) : [];
+        const hasAny = Array.isArray(modeSegments) && modeSegments.length > 0;
+        const jobs = [];
+        if (!hasAny) {
+          jobs.push({ video: variant, segmentsOverride: undefined, labelSuffix: '' });
+        } else {
+          if (normal.length > 0) jobs.push({ video: variant, segmentsOverride: normal, labelSuffix: '' });
+          if (supportsSnow && snow.length > 0) {
+            jobs.push({
+              video: { ...variant, suffix: `${variant.suffix || ''}_snow` },
+              segmentsOverride: snow,
+              labelSuffix: 'snow'
+            });
+          }
+        }
+        jobs.forEach(job => {
+          const allowRenameOriginal = allowDoneForVideo(job.video, fileKeyCounts, fileKeyVariants);
+          const result = buildFfmpegLinesFor(job.video, edit, {
+            useBatchSuffix: true,
+            allowRenameOriginal,
+            overwriteOutput: overwriteOutputs,
+            segmentMode: variant.channelMode,
+            segmentsOverride: job.segmentsOverride,
+            batchSuffix,
+            getVideoOutputDir,
+            getVideoDoneDir,
+            getSegmentModeForVideo,
+            buildRcloneCopyLine,
+            includeRenameLine: false
+          });
+          if (result.error) {
+            skipped.push(job.video.name || job.video.id);
+            return;
+          }
+          if (result.renameLine) finalRenameLine = result.renameLine;
+          if (result.usesTemp) needsTemp = true;
+          if (result.needsOutputDir !== false) {
+            const outDir = result.outputDir || 'cutted';
+            outputDirs.add(outDir);
+            if (result.usesTemp) tmpDirs.add(result.tmpDir || `${outDir}/_tmp`);
+          }
+          const label = SEGMENT_MODES.find(mode => mode.id === variant.channelMode)?.label;
+          const suffixLabel = job.video.suffix || variant.suffix || 'без суфіксу';
+          lines.push(`# ${job.video.name || job.video.id} (${label || suffixLabel}${job.labelSuffix ? ` • ${job.labelSuffix}` : ''})`);
+          lines.push(...result.lines);
+          lines.push('');
         });
-        if (result.error) {
-          skipped.push(variant.name || variant.id);
-          return;
-        }
-        if (result.usesTemp) needsTemp = true;
-        if (result.needsOutputDir !== false) {
-          const outDir = result.outputDir || 'cutted';
-          outputDirs.add(outDir);
-          if (result.usesTemp) tmpDirs.add(result.tmpDir || `${outDir}/_tmp`);
-        }
-        const label = SEGMENT_MODES.find(mode => mode.id === variant.channelMode)?.label;
-        lines.push(`# ${variant.name || variant.id} (${label || variant.suffix || 'без суфіксу'})`);
-        lines.push(...result.lines);
-        lines.push('');
       });
+      if (finalRenameLine) {
+        lines.push(finalRenameLine);
+        lines.push('');
+      }
     });
     if (lines.length === 0) {
       showHud("Немає валідних відео для FFmpeg");
@@ -1323,7 +880,7 @@ export default function App() {
     try {
       await navigator.clipboard.writeText(ffmpegCommand);
       showHud("Команда скопійована");
-    } catch (e) {
+    } catch {
       window.prompt('Скопіюйте команду вручну:', ffmpegCommand);
     }
   };
@@ -1332,7 +889,7 @@ export default function App() {
     try {
       await navigator.clipboard.writeText(ffmpegBatchScript);
       showHud("Скрипт скопійовано");
-    } catch (e) {
+    } catch {
       window.prompt('Скопіюйте скрипт вручну:', ffmpegBatchScript);
     }
   };
@@ -1341,7 +898,7 @@ export default function App() {
     try {
       await navigator.clipboard.writeText(value);
       showHud(label || "Скопійовано");
-    } catch (e) {
+    } catch {
       window.prompt('Скопіюйте вручну:', value);
     }
   };
@@ -1349,7 +906,7 @@ export default function App() {
     if (!name) return;
     try {
       await navigator.clipboard.writeText(name);
-    } catch (e) {
+    } catch {
       window.prompt('Скопіюйте назву вручну:', name);
     }
     setCopiedNameId(id);
@@ -1380,8 +937,13 @@ export default function App() {
     adminLoading,
     adminAiLoading,
     adminAiStats,
+    adminAiQueue,
+    adminAiLastRequestAt,
+    adminAiLastError,
+    adminAiRemoteState,
     adminLogoLoading,
     adminLogoStats,
+    adminSyncState,
     adminJobProgress,
     getJobMeta,
     getJobProgress,
@@ -1392,10 +954,15 @@ export default function App() {
     saveAdminConfig,
     saveAdminSnapshot,
     applyAdminSnapshot,
+    applySnapshotPayload,
     loadSheetMap,
     runAdminFfmpeg,
     runAdminAiSegments,
+    runAdminAiSegmentsRemote,
     runAdminLogoDetection,
+    pingAdminAiRemote,
+    stopAdminAi,
+    retryAdminAiFailed,
     stopAdminJob,
     pickAdminFolder,
     addVideosFromServer,
@@ -1437,10 +1004,126 @@ export default function App() {
       getVideoChannelVariants,
       allowDoneForVideo,
       buildFfmpegLinesFor,
+      getVideoOutputDir,
       getVideoDoneDir,
+      getSegmentModeForVideo,
+      buildRcloneCopyLine,
       getExpectedModesForAi
-    }
+    },
+    autoSyncEnabled: serverHydrationState !== 'pending' && autoSyncAllowed
   });
+
+  const applySnapshotPayloadRef = useRef(applySnapshotPayload);
+  useEffect(() => {
+    applySnapshotPayloadRef.current = applySnapshotPayload;
+  }, [applySnapshotPayload]);
+
+  const hasServerSnapshotData = payload => {
+    if (!payload || typeof payload !== 'object') return false;
+    const playlist = Array.isArray(payload.playlist) ? payload.playlist : [];
+    return playlist.length > 0;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrate = async () => {
+      serverHydratedRef.current = false;
+      const localSnapshot = {
+        playlist: loadFromStorage(STORAGE_KEYS.playlist, []),
+        edits: loadFromStorage(STORAGE_KEYS.edits, {})
+      };
+      const hasLocalPlaylist =
+        Array.isArray(localSnapshot.playlist) && localSnapshot.playlist.length > 0;
+      if (!adminBaseUrl) {
+        setServerHydrationState('failed');
+        return;
+      }
+      setServerHydrationState('pending');
+      const data = await loadAdminSnapshot();
+      if (cancelled) return;
+      if (data?.ok && data.payload && hasServerSnapshotData(data.payload)) {
+        applySnapshotPayloadRef.current?.(data.payload);
+        serverHydratedRef.current = true;
+        setServerHydrationState('done');
+        return;
+      }
+      if (hasLocalPlaylist) {
+        applySnapshotPayloadRef.current?.(localSnapshot);
+        showHud("Сервер порожній або недоступний — беру локальні дані");
+      } else {
+        showHud("Сервер порожній або недоступний");
+      }
+      setServerHydrationState('failed');
+    };
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [adminBaseUrl, loadAdminSnapshot]);
+
+  const { idbPutVideo, idbDeleteVideo } = usePlaylistPersistence({
+    savedEditsRef,
+    buildEditFromSaved,
+    getSavedEditForVideo,
+    dedupePlaylistAndEdits,
+    getFileKeyCounts,
+    setPlaylist,
+    setEdits,
+    currentId,
+    setCurrentId,
+    playlist,
+    playlistRef,
+    currentEdit,
+    buildServerFileUrl,
+    showHud,
+    disableIdb: true,
+    localHydrationEnabled: serverHydrationState === 'failed',
+    autoSaveEnabled
+  });
+
+  const {
+    isProcessing,
+    processingJob,
+    processingSrc,
+    notifications,
+    canvasRef,
+    processingVideoRef,
+    removeNotification,
+    startProcessing
+  } = useExportProcessing({
+    activeVideo,
+    currentEdit,
+    currentId,
+    playlistRef,
+    setPlaylist,
+    setEdits,
+    savedEditsRef,
+    setSegmentDraft,
+    showHud,
+    isBatchMode,
+    batchSuffix,
+    setBatchQueue,
+    queueServerRename,
+    allowDoneForVideo,
+    getFileKeyVariants,
+    getSegmentModeForVideo,
+    idbPutVideo,
+    idbDeleteVideo
+  });
+
+  useBatchAutoExport({
+    isBatchMode,
+    batchQueue,
+    setIsBatchMode,
+    currentId,
+    switchVideo,
+    isProcessing,
+    activeVideo,
+    currentEdit,
+    processingVideoRef,
+    startProcessing
+  });
+
   useEffect(() => {
     const prefs = loadFromStorage(STORAGE_KEYS.prefs, null);
     if (!prefs) return;
@@ -1453,6 +1136,12 @@ export default function App() {
     if (typeof prefs.adminBaseUrl === 'string') setAdminBaseUrl(prefs.adminBaseUrl);
     if (typeof prefs.overwriteOutputs === 'boolean')
       setOverwriteOutputs(prefs.overwriteOutputs);
+    if (typeof prefs.snowSpeed === 'number' && Number.isFinite(prefs.snowSpeed)) {
+      setSnowSpeed(Math.min(3, Math.max(0.25, prefs.snowSpeed)));
+    }
+    if (typeof prefs.autoSyncAllowed === 'boolean') {
+      setAutoSyncAllowed(prefs.autoSyncAllowed);
+    }
   }, []);
 
   useEffect(() => {
@@ -1463,7 +1152,9 @@ export default function App() {
       uploadToDrive,
       sidebarWidth,
       adminBaseUrl,
-      overwriteOutputs
+      overwriteOutputs,
+      snowSpeed,
+      autoSyncAllowed
     });
   }, [
     isDark,
@@ -1472,8 +1163,13 @@ export default function App() {
     uploadToDrive,
     sidebarWidth,
     adminBaseUrl,
-    overwriteOutputs
+    overwriteOutputs,
+    snowSpeed,
+    autoSyncAllowed
   ]);
+  useEffect(() => {
+    saveToStorage(STORAGE_KEYS.hotkeys, hotkeys);
+  }, [hotkeys]);
   useEffect(() => {
     if (!isFocusMode) setFocusSideOpen(false);
   }, [isFocusMode]);
@@ -1509,59 +1205,6 @@ export default function App() {
       window.removeEventListener('mouseup', handleMouseUp);
     };
   }, []);
-  // --- BATCH LOGIC ---
-  const startBatchExport = () => {
-    const selectedVideos = playlist.filter(p => p.checked);
-    if (selectedVideos.length === 0) {
-      alert("Виберіть хоча б одне відео галочкою!");
-      return;
-    }
-    if (
-      !window.confirm(
-        `Ви хочете обробити та автоматично скачати ${selectedVideos.length} обраних відео?`
-      )
-    )
-      return;
-
-    const selectedIds = selectedVideos.map(p => p.id);
-    setBatchQueue(selectedIds);
-    setBatchTotal(selectedIds.length);
-    setIsBatchMode(true);
-    switchVideo(selectedIds[0]);
-  };
-
-  useEffect(() => {
-    if (!isBatchMode) return;
-    if (batchQueue.length === 0) {
-      setIsBatchMode(false);
-      setBatchTotal(0);
-      alert("Всі обрані файли успішно оброблено та завантажено!");
-      return;
-    }
-    const nextId = batchQueue[0];
-    if (currentId !== nextId) switchVideo(nextId);
-  }, [batchQueue, isBatchMode, currentId]);
-
-  useEffect(() => {
-    if (!isBatchMode || isProcessing || batchQueue.length === 0) return;
-    if (batchQueue[0] !== currentId) return;
-    if (!activeVideo?.url || !activeVideo?.file) return;
-    if (!currentEdit.meta.duration) return;
-    const vid = processingVideoRef.current;
-    if (!vid) return;
-
-    const startWhenReady = () => startProcessing({ autoDownload: true });
-
-    if (vid.readyState >= 1) {
-      const timer = setTimeout(startWhenReady, 300);
-      return () => clearTimeout(timer);
-    }
-
-    const onReady = () => startWhenReady();
-    vid.addEventListener('loadedmetadata', onReady, { once: true });
-    return () => vid.removeEventListener('loadedmetadata', onReady);
-  }, [isBatchMode, isProcessing, batchQueue, currentId, activeVideo?.url, activeVideo?.file, currentEdit.meta.duration]);
-
   useEffect(() => {
     setSegmentDraft({ start: null, end: null });
   }, [currentId]);
@@ -1603,7 +1246,10 @@ export default function App() {
     () => buildChannelSuffixChips(activeVideo),
     [activeVideo, currentEdit.segmentMode]
   );
-  const activeSegments = getSegmentsForMode(currentEdit, activeSegmentMode);
+  const activeSegments = useMemo(
+    () => getSegmentsForMode(currentEdit, activeSegmentMode),
+    [currentEdit.segmentSets, currentEdit.segments, activeSegmentMode]
+  );
   const visibleElements = useMemo(
     () => filterElementsForMode(currentEdit.elements, activeSegmentMode),
     [currentEdit.elements, activeSegmentMode]
@@ -1623,225 +1269,6 @@ export default function App() {
     setActiveSegmentMode(activeSegmentModes[0]);
   }, [activeSegmentModesKey, currentId]);
 
-
-  // --- KEYBOARD LISTENERS ---
-  useEffect(() => {
-    const handleKeyDown = e => {
-      if (e.code === 'AltLeft' || e.code === 'AltRight') {
-        if (!altDownRef.current) {
-          altDownRef.current = true;
-          altUsedWithOtherRef.current = false;
-        }
-        return;
-      }
-      if (altDownRef.current) altUsedWithOtherRef.current = true;
-      if (!activeVideo || (isProcessing && processingJob?.videoId === currentId)) return;
-
-      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
-        e.preventDefault();
-        if (e.shiftKey) redo();
-        else undo();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyF') {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') {
-        e.preventDefault();
-        redo();
-        return;
-      }
-      if (
-        (e.code === 'Backslash' || e.key === '\\' || e.key === "'") &&
-        e.target.tagName !== 'INPUT' &&
-        e.target.tagName !== 'TEXTAREA'
-      ) {
-        e.preventDefault();
-        setIsFocusMode(prev => {
-          const next = !prev;
-          if (!next) setFocusSideOpen(false);
-          return next;
-        });
-        return;
-      }
-      if (
-        e.shiftKey &&
-        (e.code === 'Slash' || e.key === '?' || e.key === '/' || e.key === '*')
-      ) {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-        e.preventDefault();
-        cycleSegmentMode();
-        return;
-      }
-
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-        if (e.code === 'Enter' && e.target.dataset?.segmentInput === 'true') {
-          e.preventDefault();
-          addSegmentFromDraft();
-        }
-        return;
-      }
-      if (e.code === 'Space' && viewportHoverRef.current && currentEdit.viewMode === 'editor') {
-        e.preventDefault();
-        spacePanRef.current = true;
-        return;
-      }
-
-      const vid = videoRef.current;
-      if (!vid) return;
-
-      const key = (e.key || '').toLowerCase();
-      if (key === 'n' || e.code === 'KeyN') {
-        e.preventDefault();
-        addRect();
-        showHud("Додано прямокутник");
-        return;
-      }
-      if (key === 'l' || key === 'д' || e.code === 'KeyL') {
-        e.preventDefault();
-        if (!currentEdit.selectedId) {
-          showHud("Спочатку оберіть елемент");
-          return;
-        }
-        const selected = currentEdit.elements.find(el => el.id === currentEdit.selectedId);
-        if (!selected) return;
-        const activeMode =
-          activeSegmentMode || currentEdit.segmentMode || getSegmentModeForVideo(activeVideo) || 'digital';
-        const normalizedActive = normalizeName(activeMode);
-        const currentMode = normalizeName(selected.channelMode);
-        const nextMode = currentMode === normalizedActive ? 'all' : activeMode;
-        updateElement(selected.id, { channelMode: nextMode });
-        if (nextMode === 'all') {
-          showHud("Канал: всі");
-        } else {
-          const label = SEGMENT_MODES.find(mode => mode.id === activeMode)?.label || activeMode;
-          showHud(`Канал: ${label}`);
-        }
-        return;
-      }
-      if (e.code === 'Enter') {
-        e.preventDefault();
-        addSegmentFromDraft();
-        return;
-      }
-      if (key === 'b' || key === 'б' || key === ',' || e.code === 'KeyB' || e.code === 'Comma') {
-        e.preventDefault();
-        if (currentEdit.selectedId) {
-          updateElement(currentEdit.selectedId, { isOutline: true });
-          showHud("Контур");
-        } else {
-          showHud("Спочатку оберіть елемент");
-        }
-        return;
-      }
-      if (key === 'u' || key === 'ю' || key === '.' || e.code === 'KeyU' || e.code === 'Period') {
-        e.preventDefault();
-        if (currentEdit.selectedId) {
-          updateElement(currentEdit.selectedId, { isOutline: false });
-          showHud("Заливка");
-        } else {
-          showHud("Спочатку оберіть елемент");
-        }
-        return;
-      }
-      if (!e.ctrlKey && !e.metaKey && (key === 'c' || e.code === 'KeyC')) {
-        e.preventDefault();
-        const selected = currentEdit.elements.find(el => el.id === currentEdit.selectedId);
-        if (selected) copyAttributes(selected);
-        else showHud("Спочатку оберіть елемент");
-        return;
-      }
-      if (!e.ctrlKey && !e.metaKey && (key === 'v' || e.code === 'KeyV')) {
-        e.preventDefault();
-        if (currentEdit.selectedId) pasteAttributes(currentEdit.selectedId);
-        else showHud("Спочатку оберіть елемент");
-        return;
-      }
-      if (e.code === 'Delete' || e.code === 'Backspace' || key === 'delete') {
-        if (currentEdit.selectedId) {
-          e.preventDefault();
-          deleteElement(currentEdit.selectedId);
-          showHud("Елемент видалено");
-        }
-        return;
-      }
-
-      switch (e.code) {
-        case 'Space':
-          e.preventDefault();
-          togglePlayback();
-          break;
-        case 'ArrowLeft':
-          e.preventDefault();
-          vid.currentTime = Math.max(0, vid.currentTime - 2);
-          showHud(`⏪ ${vid.currentTime.toFixed(3)}s`);
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          vid.currentTime = Math.min(currentEdit.meta.duration, vid.currentTime + 2);
-          showHud(`⏩ ${vid.currentTime.toFixed(3)}s`);
-          break;
-        case 'ArrowUp':
-          e.preventDefault();
-          vid.currentTime = Math.min(currentEdit.meta.duration, vid.currentTime + seekStep);
-          showHud(`+${seekStep}s: ${vid.currentTime.toFixed(3)}s`);
-          setCurrentTime(vid.currentTime);
-          break;
-        case 'ArrowDown':
-          e.preventDefault();
-          vid.currentTime = Math.max(0, vid.currentTime - seekStep);
-          showHud(`-${seekStep}s: ${vid.currentTime.toFixed(3)}s`);
-          setCurrentTime(vid.currentTime);
-          break;
-        // NEW HOTKEYS FOR TIME
-        case 'KeyM':
-          e.preventDefault();
-          if (currentEdit.selectedId) {
-            updateElement(currentEdit.selectedId, { startTime: vid.currentTime });
-            showHud(`Початок: ${vid.currentTime.toFixed(2)}s`);
-          } else {
-            setSegmentDraft(prev => ({ ...prev, start: vid.currentTime }));
-            showHud(`Сегмент початок: ${vid.currentTime.toFixed(2)}s`);
-          }
-          break;
-        case 'Slash':
-          e.preventDefault();
-          if (currentEdit.selectedId) {
-            updateElement(currentEdit.selectedId, { endTime: vid.currentTime });
-            showHud(`Кінець: ${vid.currentTime.toFixed(2)}s`);
-          } else {
-            setSegmentDraft(prev => ({ ...prev, end: vid.currentTime }));
-            showHud(`Сегмент кінець: ${vid.currentTime.toFixed(2)}s`);
-          }
-          break;
-        default:
-          break;
-      }
-    };
-    const handleKeyUp = e => {
-      if (e.code === 'Space') {
-        spacePanRef.current = false;
-        return;
-      }
-      if (e.code !== 'AltLeft' && e.code !== 'AltRight') return;
-      if (altDownRef.current && !altUsedWithOtherRef.current) {
-        cycleSeekStep();
-      }
-      altDownRef.current = false;
-      altUsedWithOtherRef.current = false;
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
-  }, [activeVideo, isPlaying, currentEdit, isProcessing, processingJob, currentId, seekStep, activeSegmentMode]);
-
   useEffect(() => {
     const handlePointerDown = e => {
       const overlay = overlayRef.current;
@@ -1853,147 +1280,17 @@ export default function App() {
     return () => window.removeEventListener('mousedown', handlePointerDown);
   }, [currentId, currentEdit.selectedId]);
 
-  // --- HANDLERS ---
-  const handleFileChange = async event => {
-    const files = Array.from(event.target.files);
-    if (files.length === 0) return;
-    const sheetMap = await loadSheetMap();
-    if (!sheetMap) showHud("Таблиця не завантажена, суфікси не підтягнуто");
-    const savedEdits = savedEditsRef.current || {};
-    const existingByFileKey = new Map(
-      playlistRef.current.filter(v => v.fileKey).map(v => [v.fileKey, v])
-    );
-    const newVideos = [];
-    const replacements = [];
-    files.forEach(file => {
-      const fileKey = getFileKey(file);
-      const normalizedName = normalizeName(file.name);
-      const sheetEntries = sheetMap?.get(normalizedName) || [];
-      const sheetHasBoth = sheetEntries.length > 0 && entriesHaveBoth(sheetEntries);
-      const entries = sheetEntries.length > 0 ? sheetEntries : [null];
-      const orderedEntries = entries
-        .map((entry, index) => ({ entry, index }))
-        .sort((a, b) => {
-          const orderDiff = getEntryOrder(a.entry) - getEntryOrder(b.entry);
-          return orderDiff !== 0 ? orderDiff : a.index - b.index;
-        })
-        .map(item => item.entry);
-      const channels = buildChannelsFromEntries(orderedEntries);
-      const existingItem = existingByFileKey.get(fileKey);
-      if (existingItem && (existingItem.file || existingItem.url)) {
-        if (channels.length > 0) {
-          replacements.push({
-            ...existingItem,
-            file,
-            url: existingItem.url || URL.createObjectURL(file),
-            channels: mergeChannelLists(existingItem.channels, channels),
-            sheetHasBoth: existingItem.sheetHasBoth || sheetHasBoth
-          });
-        }
-        return;
-      }
-      const url = URL.createObjectURL(file);
-      const primarySuffix = channels[0]?.suffix || '';
-      const baseItem = {
-        id: fileKey,
-        file,
-        url,
-        name: file.name,
-        checked: false,
-        suffix: primarySuffix,
-        notRelevant: existingItem?.notRelevant || false,
-        fileKey,
-        type: file.type,
-        size: file.size,
-        lastModified: file.lastModified,
-        isLoading: false,
-        sheetRow: null,
-        sheetMode: '',
-        sheetCameraType: '',
-        sheetStatus: '',
-        sheetHasBoth,
-        channels
-      };
-      if (existingItem) {
-        replacements.push({ ...baseItem, channels: mergeChannelLists(existingItem.channels, channels) });
-        return;
-      }
-      newVideos.push(baseItem);
-      idbPutVideo({
-        fileKey,
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        lastModified: file.lastModified,
-        blob: file
-      }).catch(() => showHud("Не вдалося зберегти файл локально"));
-    });
-    const fileKeyCounts = new Map();
-    const countFileKey = item => {
-      if (!item?.fileKey) return;
-      fileKeyCounts.set(item.fileKey, (fileKeyCounts.get(item.fileKey) || 0) + 1);
-    };
-    playlistRef.current.forEach(countFileKey);
-    newVideos.forEach(countFileKey);
-    if (newVideos.length === 0 && replacements.length === 0) {
-      showHud("Файли вже додані");
-      return;
-    }
-    setPlaylist(prev => {
-      let next = prev;
-      if (replacements.length > 0) {
-        const byId = new Map(replacements.map(r => [r.id, r]));
-        next = prev.map(v => (byId.has(v.id) ? { ...v, ...byId.get(v.id) } : v));
-      }
-      if (newVideos.length > 0) next = [...next, ...newVideos];
-      return next;
-    });
-    setEdits(prev => {
-      const next = { ...prev };
-      [...newVideos, ...replacements].forEach(video => {
-        const restored = buildEditFromSaved(
-          getSavedEditForVideo(savedEdits, video, fileKeyCounts)
-        );
-        if (restored) next[video.id] = restored;
-      });
-      return next;
-    });
-    if (!currentId) {
-      const first = newVideos[0] || replacements[0];
-      if (first) setCurrentId(first.id);
-    }
-  };
-
-  useEffect(() => {
-    if (!currentId) return;
-    const currentVideo = playlist.find(v => v.id === currentId);
-    if (!currentVideo?.id) return;
-    const saved = savedEditsRef.current || {};
-    const snapshot = {
-      trim: currentEdit.trim,
-      crop: currentEdit.crop,
-      elements: currentEdit.elements,
-      segments: currentEdit.segments,
-      segmentSets: currentEdit.segmentSets,
-      segmentMode: currentEdit.segmentMode,
-      viewMode: currentEdit.viewMode,
-      meta: {
-        duration: currentEdit.meta.duration,
-        width: currentEdit.meta.width,
-        height: currentEdit.meta.height
-      }
-    };
-    saved[currentVideo.id] = snapshot;
-    if (currentVideo.fileKey && currentVideo.fileKey !== currentVideo.id) {
-      saved[currentVideo.fileKey] = snapshot;
-    }
-    savedEditsRef.current = saved;
-    saveToStorage(STORAGE_KEYS.edits, saved);
-    idbSaveEdit(currentVideo.id, snapshot).catch(() => { });
-    if (currentVideo.fileKey && currentVideo.fileKey !== currentVideo.id) {
-      idbSaveEdit(currentVideo.fileKey, snapshot).catch(() => { });
-    }
-  }, [currentId, currentEdit, playlist]);
+  const { handleFileChange, removeVideo, deleteSelectedVideos } = usePlaylistActions({
+    playlistRef,
+    setPlaylist,
+    setEdits,
+    currentId,
+    setCurrentId,
+    savedEditsRef,
+    idbPutVideo,
+    showHud,
+    loadSheetMap
+  });
 
   useEffect(() => {
     if (zoom <= 1) setPan({ x: 0, y: 0 });
@@ -2056,98 +1353,13 @@ export default function App() {
     activeVideo?.id
   ]);
 
-  const switchVideo = id => {
+  function switchVideo(id) {
     setIsPlaying(false);
-    if (!isProcessing) {
-      setProgress(0);
-      setErrorMsg('');
-    }
     setCurrentId(id);
     setZoom(1); // Reset zoom on switch
     setPan({ x: 0, y: 0 });
     if (videoRef.current) videoRef.current.pause();
-  };
-
-  useEffect(() => {
-    if (!currentId) return;
-    const currentVideo = playlistRef.current.find(v => v.id === currentId);
-    if (!currentVideo || currentVideo.url) return;
-    if (currentVideo.source === 'server' && currentVideo.sourcePath) {
-      const remoteUrl = buildServerFileUrl(currentVideo.sourcePath);
-      setPlaylist(prev =>
-        prev.map(v =>
-          v.id === currentId
-            ? {
-              ...v,
-              url: remoteUrl,
-              isLoading: false
-            }
-            : v
-        )
-      );
-      return;
-    }
-    if (!currentVideo.fileKey) return;
-    let canceled = false;
-    const load = async () => {
-      setPlaylist(prev =>
-        prev.map(v => (v.id === currentId ? { ...v, isLoading: true } : v))
-      );
-      let record = null;
-      try {
-        record = await idbGetVideo(currentVideo.fileKey);
-      } catch (e) { }
-      if (canceled) return;
-      if (!record?.blob) {
-        setPlaylist(prev =>
-          prev.map(v => (v.id === currentId ? { ...v, isLoading: false } : v))
-        );
-        showHud("Файл не знайдено в кеші");
-        return;
-      }
-      const file =
-        record.blob instanceof File
-          ? record.blob
-          : new File([record.blob], record.name || currentVideo.name, {
-            type: record.type || currentVideo.type || 'video/mp4',
-            lastModified: record.lastModified || currentVideo.lastModified || Date.now()
-          });
-      const url = URL.createObjectURL(file);
-      setPlaylist(prev =>
-        prev.map(v =>
-          v.id === currentId
-            ? {
-              ...v,
-              file,
-              url,
-              isLoading: false,
-              name: record.name || v.name,
-              type: record.type || v.type,
-              size: record.size || v.size,
-              lastModified: record.lastModified || v.lastModified
-            }
-            : v
-        )
-      );
-    };
-    load();
-    return () => {
-      canceled = true;
-    };
-  }, [currentId]);
-
-  const removeVideo = (e, id) => {
-    e.stopPropagation();
-    const target = playlistRef.current.find(p => p.id === id);
-    if (target?.url) URL.revokeObjectURL(target.url);
-    setPlaylist(prev => prev.filter(p => p.id !== id));
-    setEdits(prev => {
-      const newEdits = { ...prev };
-      delete newEdits[id];
-      return newEdits;
-    });
-    if (currentId === id) setCurrentId(null);
-  };
+  }
 
   const handleMetadata = e => {
     const vid = e.target;
@@ -2234,6 +1446,7 @@ export default function App() {
     const x = e.clientX - rect.left;
     const perc = Math.max(0, Math.min(1, x / rect.width));
     videoRef.current.currentTime = perc * currentEdit.meta.duration;
+    lastTimeUpdateRef.current = videoRef.current.currentTime;
     setCurrentTime(videoRef.current.currentTime);
   };
   const handleSegmentSeek = e => {
@@ -2248,6 +1461,7 @@ export default function App() {
     const offset = perc * total;
     const nextTime = getTimeForSegmentOffset(offset, segments);
     videoRef.current.currentTime = nextTime;
+    lastTimeUpdateRef.current = nextTime;
     setCurrentTime(nextTime);
   };
 
@@ -2282,8 +1496,15 @@ export default function App() {
     };
     segmentLoopStartRef.current = startSegmentLoop;
     const onTimeUpdate = () => {
-      setCurrentTime(vid.currentTime);
-      if (playSegmentsOnlyRef.current && isPlayingRef.current) handleSegmentPlayback(vid);
+      const time = vid.currentTime;
+      if (Math.abs(time - lastTimeUpdateRef.current) < 0.02) return;
+      lastTimeUpdateRef.current = time;
+      if (timeUpdateRafRef.current) return;
+      timeUpdateRafRef.current = requestAnimationFrame(() => {
+        timeUpdateRafRef.current = null;
+        setCurrentTime(lastTimeUpdateRef.current);
+        if (playSegmentsOnlyRef.current && isPlayingRef.current) handleSegmentPlayback(vid);
+      });
     };
     const onEnded = () => {
       isPlayingRef.current = false;
@@ -2310,6 +1531,10 @@ export default function App() {
       vid.removeEventListener('pause', onPause);
       vid.removeEventListener('play', onPlay);
       stopSegmentLoop();
+      if (timeUpdateRafRef.current) {
+        cancelAnimationFrame(timeUpdateRafRef.current);
+        timeUpdateRafRef.current = null;
+      }
       segmentLoopStartRef.current = null;
     };
   }, [currentId]);
@@ -2379,33 +1604,6 @@ export default function App() {
     showHud("Прямокутник дубльовано");
   };
 
-  const alignElement = (id, mode) => {
-    const el = currentEdit.elements.find(e => e.id === id);
-    if (!el) return;
-    const next = { ...el };
-    if (mode === 'center-h') next.x = 50 - el.w / 2;
-    if (mode === 'center-v') next.y = 50 - el.h / 2;
-    if (mode === 'top') next.y = 0;
-    if (mode === 'bottom') next.y = 100 - el.h;
-    if (mode === 'left') next.x = 0;
-    if (mode === 'right') next.x = 100 - el.w;
-    updateElement(id, next);
-    showHud("Вирівняно");
-  };
-
-  const snapElementToGrid = (id, step = 5) => {
-    const el = currentEdit.elements.find(e => e.id === id);
-    if (!el) return;
-    const snap = val => Math.max(0, Math.min(100, Math.round(val / step) * step));
-    updateElement(id, {
-      x: snap(el.x),
-      y: snap(el.y),
-      w: snap(el.w),
-      h: snap(el.h)
-    });
-    showHud("Прив’язка до сітки");
-  };
-
   const copyAttributes = el => {
     setCopiedAttributes({
       color: el.color,
@@ -2457,6 +1655,70 @@ export default function App() {
     setSegmentDraft({ start: null, end: null });
     showHud("Сегмент додано");
   };
+
+  const toggleSegmentSnowAtTime = useCallback(() => {
+    const vid = videoRef.current;
+    if (!vid || !currentEdit) return;
+    const mode =
+      activeSegmentMode ||
+      currentEdit.segmentMode ||
+      getSegmentModeForVideo(activeVideo) ||
+      'digital';
+    const segments = getSegmentsForMode(currentEdit, mode);
+    if (!segments.length) {
+      showHud("Немає сегментів");
+      return;
+    }
+    const t = vid.currentTime;
+    const target = segments.find(seg => t >= seg.start && t <= seg.end);
+    if (!target) {
+      showHud("Немає сегмента під курсором");
+      return;
+    }
+    const nextSegments = segments.map(seg =>
+      seg.id === target.id ? { ...seg, isSnow: !seg.isSnow } : seg
+    );
+    updateCurrentEdit({
+      segmentSets: updateSegmentsForMode(currentEdit, mode, nextSegments),
+      segments: nextSegments
+    });
+    showHud(target.isSnow ? "Snow знято" : "Snow додано");
+  }, [activeSegmentMode, activeVideo, currentEdit, getSegmentModeForVideo, showHud, updateCurrentEdit]);
+
+  useEditorHotkeys({
+    hotkeys,
+    hotkeyCaptureRef,
+    altDownRef,
+    altUsedWithOtherRef,
+    spacePanRef,
+    viewportHoverRef,
+    searchInputRef,
+    videoRef,
+    activeVideo,
+    isProcessing,
+    processingJob,
+    currentId,
+    currentEdit,
+    activeSegmentMode,
+    seekStep,
+    setCurrentTime,
+    setIsFocusMode,
+    setFocusSideOpen,
+    undo,
+    redo,
+    cycleSegmentMode,
+    cycleSeekStep,
+    addSegmentFromDraft,
+    addRect,
+    updateElement,
+    setSegmentDraft,
+    toggleSegmentSnowAtTime,
+    togglePlayback,
+    copyAttributes,
+    pasteAttributes,
+    deleteElement,
+    showHud
+  });
 
   const normalizeSegment = (seg, duration) => {
     if (!duration) return seg;
@@ -2526,120 +1788,6 @@ export default function App() {
       segmentSets: updateSegmentsForMode(currentEdit, mode, []),
       segments: []
     });
-  };
-
-  const stopExport = () => {
-    if (!isProcessing) return;
-    cancelProcessingRef.current = true;
-    stopLoopRef.current?.();
-    if (processingVideoRef.current) processingVideoRef.current.pause();
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state !== 'inactive') {
-      try {
-        recorder.stop();
-      } catch (e) { }
-    }
-    setIsProcessing(false);
-    setProgress(0);
-    if (processingJob?.id) {
-      updateNotification(processingJob.id, { status: 'canceled' });
-      setTimeout(() => removeNotification(processingJob.id), 3000);
-    }
-    setProcessingJob(null);
-    setProcessingSrc(null);
-    if (isBatchMode) {
-      setIsBatchMode(false);
-      setBatchQueue([]);
-      setBatchTotal(0);
-    }
-    showHud("Експорт зупинено");
-  };
-
-  const deleteSelectedVideos = () => {
-    const selected = playlistRef.current.filter(p => p.checked);
-    if (selected.length === 0) {
-      showHud("Немає обраних");
-      return;
-    }
-    if (!window.confirm(`Видалити ${selected.length} обраних відео?`)) return;
-    const selectedIds = new Set(selected.map(p => p.id));
-    selected.forEach(item => {
-      if (item.url) URL.revokeObjectURL(item.url);
-    });
-    setPlaylist(prev => prev.filter(p => !selectedIds.has(p.id)));
-    setEdits(prev => {
-      const next = { ...prev };
-      selectedIds.forEach(id => {
-        delete next[id];
-      });
-      return next;
-    });
-    if (selectedIds.has(currentId)) {
-      const nextId = playlistRef.current.find(p => !selectedIds.has(p.id))?.id || null;
-      setCurrentId(nextId);
-    }
-  };
-
-  const replaceVideoById = (videoId, blob, ext, mimeType) => {
-    const currentVideo = playlistRef.current.find(v => v.id === videoId);
-    if (!currentVideo) return;
-    const baseName =
-      currentVideo.name?.lastIndexOf('.') !== -1
-        ? currentVideo.name.substring(0, currentVideo.name.lastIndexOf('.'))
-        : currentVideo.name || 'video';
-    const newName = `${baseName}_crop.${ext}`;
-    const file = new File([blob], newName, { type: mimeType, lastModified: Date.now() });
-    const newFileKey = getFileKey(file);
-    const url = URL.createObjectURL(file);
-    if (currentVideo.url) URL.revokeObjectURL(currentVideo.url);
-
-    setPlaylist(prev =>
-      prev.map(v =>
-        v.id === videoId
-          ? {
-            ...v,
-            file,
-            url,
-            name: newName,
-            type: file.type,
-            size: file.size,
-            lastModified: file.lastModified,
-            fileKey: newFileKey,
-            isLoading: false
-          }
-          : v
-      )
-    );
-    if (currentVideo.fileKey && currentVideo.fileKey !== newFileKey) {
-      idbDeleteVideo(currentVideo.fileKey).catch(() => { });
-      const saved = savedEditsRef.current || {};
-      delete saved[currentVideo.id];
-      savedEditsRef.current = saved;
-      saveToStorage(STORAGE_KEYS.edits, saved);
-    }
-    idbPutVideo({
-      fileKey: newFileKey,
-      name: newName,
-      type: file.type,
-      size: file.size,
-      lastModified: file.lastModified,
-      blob: file
-    }).catch(() => { });
-    const resetEdit = {
-      ...DEFAULT_EDIT_STATE,
-      trim: { ...DEFAULT_EDIT_STATE.trim },
-      crop: { ...DEFAULT_EDIT_STATE.crop },
-      elements: [],
-      segments: [],
-      segmentMode: 'digital',
-      segmentSets: getDefaultSegmentSets(),
-      meta: { duration: 0, width: 0, height: 0 },
-      history: [],
-      future: []
-    };
-    setEdits(prev => ({ ...prev, [videoId]: resetEdit }));
-    setSegmentDraft({ start: null, end: null });
-    showHud("Відео замінено");
   };
 
   const applyChanges = mode => {
@@ -2917,6 +2065,7 @@ export default function App() {
       trimPreviewRef.current = null;
       cropPreviewRef.current = null;
       segmentPreviewRef.current.clear();
+      if (!autoSaveEnabledRef.current) setAutoSaveEnabled(true);
     };
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
@@ -2931,6 +2080,7 @@ export default function App() {
     const wantsPan = spacePanRef.current || e.button === 1 || e.button === 2;
     if (!wantsPan && zoom <= 1) return;
     e.preventDefault();
+    if (autoSaveEnabledRef.current) setAutoSaveEnabled(false);
     isDragging.current = true;
     dragTarget.current = { type: 'pan' };
     startPos.current = { x: e.clientX, y: e.clientY };
@@ -2942,6 +2092,7 @@ export default function App() {
       return;
     }
     e.stopPropagation();
+    if (autoSaveEnabledRef.current) setAutoSaveEnabled(false);
     isDragging.current = true;
     dragTarget.current = targetInfo;
     startPos.current = { x: e.clientX, y: e.clientY };
@@ -2979,402 +2130,6 @@ export default function App() {
     overlay.addEventListener('wheel', onWheel, { passive: false });
     return () => overlay.removeEventListener('wheel', onWheel);
   }, [handleWheelZoom]);
-
-  // --- PROCESSING ---
-  const startProcessing = async (options = {}) => {
-    const { autoDownload = false, includeElements = true, replaceSource = false } = options;
-    if (!processingVideoRef.current || !activeVideo) return;
-    const jobVideo = activeVideo;
-    const jobEdit = currentEdit;
-    const jobVideoId = currentId;
-    const jobId = Date.now().toString();
-    const jobName = jobVideo?.name || 'video';
-    const jobType = replaceSource ? 'crop' : 'export';
-    if (jobVideo.notRelevant) {
-      if (jobVideo.source === 'server') {
-        await queueServerRename(jobVideo, 'not_relevant');
-        showHud("Not relevant: перенесено в done");
-      } else {
-        showHud("Not relevant доступний лише для файлів з теки");
-      }
-      return;
-    }
-    setProcessingJob({
-      id: jobId,
-      videoId: jobVideoId,
-      name: jobName,
-      progress: 0,
-      status: 'running',
-      type: jobType
-    });
-    addNotification({
-      id: jobId,
-      videoId: jobVideoId,
-      name: jobName,
-      progress: 0,
-      status: 'running',
-      type: jobType
-    });
-    setProcessingSrc(jobVideo.url);
-    cancelProcessingRef.current = false;
-    setIsProcessing(true);
-    setProgress(0);
-    setErrorMsg('');
-    if (!jobVideo.file && jobVideo.source !== 'server') {
-      setIsProcessing(false);
-      showHud("Файл ще завантажується");
-      updateNotification(jobId, { status: 'canceled' });
-      setTimeout(() => removeNotification(jobId), 3000);
-      setProcessingJob(null);
-      setProcessingSrc(null);
-      return;
-    }
-    if (!jobEdit.meta.duration) {
-      setIsProcessing(false);
-      showHud("Метадані ще не готові");
-      updateNotification(jobId, { status: 'canceled' });
-      setTimeout(() => removeNotification(jobId), 3000);
-      setProcessingJob(null);
-      setProcessingSrc(null);
-      return;
-    }
-
-    const vid = processingVideoRef.current;
-    if (vid.src !== jobVideo.url) {
-      vid.src = jobVideo.url;
-      vid.load();
-    }
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true, alpha: false });
-    if (!ctx) {
-      setIsProcessing(false);
-      setErrorMsg('Canvas недоступний для обробки');
-      updateNotification(jobId, { status: 'canceled' });
-      setTimeout(() => removeNotification(jobId), 3000);
-      setProcessingJob(null);
-      setProcessingSrc(null);
-      return;
-    }
-    ctx.imageSmoothingEnabled = true;
-    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
-
-    const ensureVideoReady = () =>
-      new Promise((resolve, reject) => {
-        if (vid.readyState >= 2) return resolve();
-        const onReady = () => resolve();
-        const onError = () => reject(new Error('Не вдалося завантажити відео'));
-        vid.addEventListener('loadeddata', onReady, { once: true });
-        vid.addEventListener('error', onError, { once: true });
-        vid.load();
-      });
-    try {
-      await ensureVideoReady();
-    } catch (e) {
-      setIsProcessing(false);
-      setErrorMsg('Не вдалося завантажити відео для обробки');
-      updateNotification(jobId, { status: 'canceled' });
-      setTimeout(() => removeNotification(jobId), 3000);
-      setProcessingJob(null);
-      setProcessingSrc(null);
-      return;
-    }
-
-    const cropPx = normalizeCropPx(jobEdit.crop, jobEdit.meta);
-    if (cropPx.w <= 0 || cropPx.h <= 0) {
-      setIsProcessing(false);
-      setErrorMsg('Обрізання має нульовий розмір');
-      updateNotification(jobId, { status: 'canceled' });
-      setTimeout(() => removeNotification(jobId), 3000);
-      setProcessingJob(null);
-      setProcessingSrc(null);
-      return;
-    }
-    canvas.width = cropPx.w;
-    canvas.height = cropPx.h;
-    const { trim, meta } = jobEdit;
-    const segmentMode = getSegmentModeForVideo(jobVideo);
-    const elements = filterElementsForMode(jobEdit.elements, segmentMode);
-    const segments = getSegmentsForMode(jobEdit, segmentMode);
-
-    const exportSegments = Array.isArray(segments) && segments.length > 0
-      ? segments
-        .map(seg => ({
-          start: clamp(seg.start, 0, meta.duration || 0),
-          end: clamp(seg.end, 0, meta.duration || 0)
-        }))
-        .filter(seg => seg.end > seg.start)
-      : [
-        {
-          start: clamp(trim.start, 0, meta.duration || 0),
-          end: clamp(trim.end, 0, meta.duration || 0)
-        }
-      ];
-    if (exportSegments.length === 1 && exportSegments[0].end <= exportSegments[0].start) {
-      exportSegments[0] = { start: 0, end: meta.duration };
-    }
-    if (exportSegments.length === 0) {
-      setIsProcessing(false);
-      showHud("Немає валідних сегментів");
-      updateNotification(jobId, { status: 'canceled' });
-      setTimeout(() => removeNotification(jobId), 3000);
-      setProcessingJob(null);
-      setProcessingSrc(null);
-      return;
-    }
-    const totalDuration = exportSegments.reduce((sum, seg) => sum + (seg.end - seg.start), 0);
-    if (totalDuration <= 0.05) {
-      setIsProcessing(false);
-      showHud("Надто короткий фрагмент для експорту");
-      updateNotification(jobId, { status: 'canceled' });
-      setTimeout(() => removeNotification(jobId), 3000);
-      setProcessingJob(null);
-      setProcessingSrc(null);
-      return;
-    }
-    let animationId;
-    let vfcId = null;
-    const useVfc = typeof vid.requestVideoFrameCallback === 'function';
-    const stopLoop = () => {
-      if (useVfc && vfcId !== null) vid.cancelVideoFrameCallback(vfcId);
-      if (!useVfc && animationId) cancelAnimationFrame(animationId);
-    };
-    stopLoopRef.current = stopLoop;
-    let segmentIndex = 0;
-    const scheduleNextFrame = () => {
-      if (useVfc) vfcId = vid.requestVideoFrameCallback(processFrame);
-      else animationId = requestAnimationFrame(processFrame);
-    };
-    const waitForFrame = () =>
-      new Promise(resolve => {
-        if (useVfc) {
-          vid.requestVideoFrameCallback(() => resolve());
-        } else {
-          setTimeout(resolve, 0);
-        }
-      });
-    const seekToSegment = async (index, shouldPlay = true) => {
-      vid.pause();
-      await new Promise(r => {
-        vid.onseeked = r;
-        vid.currentTime = exportSegments[index].start;
-      });
-      if (shouldPlay) {
-        try {
-          await vid.play();
-        } catch (e) { }
-        await waitForFrame();
-        scheduleNextFrame();
-      }
-    };
-    await seekToSegment(0, false);
-
-    let targetFps = 30;
-    try {
-      const sourceStream = vid.captureStream ? vid.captureStream() : null;
-      const sourceTrack = sourceStream?.getVideoTracks?.()[0];
-      const sourceFps = sourceTrack?.getSettings?.().frameRate;
-      if (Number.isFinite(sourceFps) && sourceFps > 0) targetFps = Math.round(sourceFps);
-    } catch (e) { }
-    const stream = canvas.captureStream(targetFps);
-    const frameEpsilon = targetFps > 0 ? 1 / targetFps : 0.04;
-
-    let mimeType = 'video/webm';
-    const sourceType = jobVideo.file?.type || '';
-    if (sourceType.includes('mp4') && MediaRecorder.isTypeSupported('video/mp4'))
-      mimeType = 'video/mp4';
-    else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9'))
-      mimeType = 'video/webm;codecs=vp9';
-
-    let mediaRecorder;
-    try {
-      let videoBitsPerSecond = null;
-      if (jobVideo.file?.size && meta.duration > 0) {
-        const totalBps = Math.floor((jobVideo.file.size * 8) / meta.duration);
-        videoBitsPerSecond = Math.max(1_000_000, totalBps);
-      }
-      mediaRecorder = new MediaRecorder(stream, {
-        mimeType,
-        videoBitsPerSecond: videoBitsPerSecond || undefined,
-        bitsPerSecond: videoBitsPerSecond || undefined
-      });
-    } catch (e) {
-      mediaRecorder = new MediaRecorder(stream, { mimeType });
-    }
-    mediaRecorderRef.current = mediaRecorder;
-    const chunks = [];
-    let finalizeCalled = false;
-    let hardStopTimer = null;
-    const onVideoEnded = () => {
-      if (!finalizeCalled) finalizeRecording('ended');
-    };
-    const cleanupFinalize = () => {
-      if (hardStopTimer) clearTimeout(hardStopTimer);
-      vid.removeEventListener('ended', onVideoEnded);
-    };
-    const finalizeRecording = () => {
-      if (finalizeCalled) return;
-      finalizeCalled = true;
-      cleanupFinalize();
-      stopLoop();
-      if (mediaRecorder.state !== 'inactive') {
-        try {
-          mediaRecorder.stop();
-        } catch (e) { }
-      }
-    };
-    mediaRecorder.ondataavailable = e => {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
-    mediaRecorder.onerror = () => {
-      setIsProcessing(false);
-      setErrorMsg('Помилка кодування відео');
-      updateNotification(jobId, { status: 'canceled' });
-      setTimeout(() => removeNotification(jobId), 3000);
-      setProcessingJob(null);
-      setProcessingSrc(null);
-      finalizeRecording();
-    };
-    mediaRecorder.onstop = () => {
-      cleanupFinalize();
-      const canceled = cancelProcessingRef.current;
-      cancelProcessingRef.current = false;
-      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-      setIsProcessing(false);
-      vid.pause();
-      mediaRecorderRef.current = null;
-      stopLoopRef.current = null;
-      setProcessingSrc(null);
-      setProcessingJob(null);
-      if (canceled) {
-        updateNotification(jobId, { status: 'canceled' });
-        setTimeout(() => removeNotification(jobId), 3000);
-        return;
-      }
-      const blob = new Blob(chunks, { type: mimeType });
-      if (replaceSource) {
-        replaceVideoById(jobVideoId, blob, ext, mimeType);
-        updateNotification(jobId, { status: 'done', progress: 100 });
-        setTimeout(() => removeNotification(jobId), 4000);
-        return;
-      }
-      const url = URL.createObjectURL(blob);
-      setEdits(prev => {
-        const existing = prev[jobVideoId] || DEFAULT_EDIT_STATE;
-        return { ...prev, [jobVideoId]: { ...existing, processedUrl: url, processedExt: ext } };
-      });
-      updateNotification(jobId, { status: 'done', progress: 100 });
-      setTimeout(() => removeNotification(jobId), 4000);
-
-      if (autoDownload) {
-        const a = document.createElement('a');
-        a.href = url;
-        const baseName =
-          jobVideo.name.lastIndexOf('.') !== -1
-            ? jobVideo.name.substring(0, jobVideo.name.lastIndexOf('.'))
-            : jobVideo.name;
-        const perVideoSuffix = jobVideo?.suffix || '';
-        const extraBatchSuffix = isBatchMode && batchSuffix ? batchSuffix : '';
-        const downloadSuffix = `${perVideoSuffix}${extraBatchSuffix}`;
-        a.download = `${baseName}${downloadSuffix}.${ext}`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        if (jobVideo.source === 'server') {
-          const fileKeyCounts = new Map();
-          playlistRef.current.forEach(item => {
-            if (!item?.fileKey) return;
-            fileKeyCounts.set(item.fileKey, (fileKeyCounts.get(item.fileKey) || 0) + 1);
-          });
-          const variants = getFileKeyVariants(playlistRef.current);
-          const allowRenameOriginal = allowDoneForVideo(jobVideo, fileKeyCounts, variants);
-          if (allowRenameOriginal) {
-            queueServerRename(jobVideo, 'done');
-          }
-        }
-        if (isBatchMode) setBatchQueue(prev => prev.slice(1));
-      }
-    };
-
-    mediaRecorder.start();
-    vid.addEventListener('ended', onVideoEnded);
-    hardStopTimer = setTimeout(() => {
-      if (!finalizeCalled) finalizeRecording('timeout');
-    }, Math.max(2000, Math.ceil((totalDuration + 1) * 1000)));
-    vid.muted = true;
-    vid.volume = 0.0;
-    try {
-      await vid.play();
-    } catch (e) {
-      console.error(e);
-    }
-    await waitForFrame();
-
-    let lastVideoTime = vid.currentTime || 0;
-    let lastAdvanceAt = performance.now();
-    const processFrame = () => {
-      if (!isProcessing && vid.paused) return;
-      if (vid.readyState < 2) {
-        scheduleNextFrame();
-        return;
-      }
-      const now = performance.now();
-      if (vid.currentTime > lastVideoTime + 0.0005) {
-        lastVideoTime = vid.currentTime;
-        lastAdvanceAt = now;
-      } else if (now - lastAdvanceAt > 2000) {
-        finalizeRecording('stalled');
-        return;
-      }
-      const currentSegment = exportSegments[segmentIndex];
-      if (vid.ended || currentSegment.end - vid.currentTime <= frameEpsilon) {
-        if (segmentIndex < exportSegments.length - 1) {
-          segmentIndex += 1;
-          seekToSegment(segmentIndex);
-          return;
-        }
-        finalizeRecording();
-        return;
-      }
-
-      ctx.drawImage(vid, cropPx.x, cropPx.y, cropPx.w, cropPx.h, 0, 0, cropPx.w, cropPx.h);
-      if (includeElements) {
-        elements.forEach(el => {
-          if (vid.currentTime < el.startTime || vid.currentTime > el.endTime) return;
-          const elRealX = (el.x / 100) * meta.width;
-          const elRealY = (el.y / 100) * meta.height;
-          const elRealW = (el.w / 100) * meta.width;
-          const elRealH = (el.h / 100) * meta.height;
-          const canvasX = elRealX - cropPx.x;
-          const canvasY = elRealY - cropPx.y;
-          ctx.fillStyle = el.color;
-          ctx.strokeStyle = el.color;
-          ctx.lineWidth = el.isOutline ? 1 : Math.max(1, (el.thickness / 100) * meta.width * 0.5);
-          if (el.type === 'circle') {
-            const cx = canvasX + elRealW / 2;
-            const cy = canvasY + elRealH / 2;
-            ctx.beginPath();
-            ctx.ellipse(cx, cy, elRealW / 2, elRealH / 2, 0, 0, Math.PI * 2);
-            if (el.isOutline) ctx.stroke();
-            else ctx.fill();
-          } else {
-            if (el.isOutline) ctx.strokeRect(canvasX, canvasY, elRealW, elRealH);
-            else ctx.fillRect(canvasX, canvasY, elRealW, elRealH);
-          }
-        });
-      }
-
-      const currentOffset = exportSegments
-        .slice(0, segmentIndex)
-        .reduce((sum, seg) => sum + (seg.end - seg.start), 0);
-      const currentProgress = currentOffset + (vid.currentTime - currentSegment.start);
-      const pct = Math.min(100, (currentProgress / totalDuration) * 100);
-      setProgress(pct);
-      setProcessingJob(prev => (prev?.id === jobId ? { ...prev, progress: pct } : prev));
-      updateNotification(jobId, { progress: pct });
-      scheduleNextFrame();
-    };
-    processFrame();
-  };
 
   const getPreviewStyle = () => {
     if (currentEdit.viewMode !== 'preview')
@@ -3452,11 +2207,14 @@ export default function App() {
     setZoom(clampedZoom);
     setPan(newPan);
   };
-  // Batch Progress: (Total - Queue) / Total
-  const batchProgressPercent =
-    batchTotal > 0 ? ((batchTotal - batchQueue.length) / batchTotal) * 100 : 0;
-  const segmentTotal = activeSegments.length > 0 ? getSegmentTotal(activeSegments) : 0;
-  const segmentOffset = segmentTotal > 0 ? getSegmentOffsetForTime(currentTime, activeSegments) : 0;
+  const segmentTotal = useMemo(
+    () => (activeSegments.length > 0 ? getSegmentTotal(activeSegments) : 0),
+    [activeSegments]
+  );
+  const segmentOffset = useMemo(
+    () => (segmentTotal > 0 ? getSegmentOffsetForTime(currentTime, activeSegments) : 0),
+    [segmentTotal, currentTime, activeSegments]
+  );
   const focusHeightValue = Number.isFinite(focusCanvasHeight)
     ? focusCanvasHeight
     : typeof window !== 'undefined'
@@ -3487,6 +2245,7 @@ export default function App() {
     activeGroupKey,
     allCount,
     multiCount,
+    snowCount,
     isAllSelected,
     searchQuery,
     onSearchChange: setSearchQuery,
@@ -3535,6 +2294,7 @@ export default function App() {
     isCanvasExpanded,
     selectedCount,
     adminLoading,
+    adminSyncState,
     onCopyVideoName: copyVideoName,
     onSetVideoSuffix: setVideoSuffix,
     onCopyText: copyText,
@@ -3550,6 +2310,10 @@ export default function App() {
     onRunAdminFfmpeg: runAdminFfmpeg,
     onAddVideosFromServer: addVideosFromServer,
     onOpenAdmin: () => setAdminOpen(true),
+    onOpenImportPicker: () => {
+      setAdminOpen(true);
+      setImportPickerRequest(prev => prev + 1);
+    },
     onOpenAdminAi: () => {
       setAdminOpen(true);
       setAdminHistoryOpen(false);
@@ -3603,14 +2367,13 @@ export default function App() {
     getSegmentTotal,
     segmentTotal,
     segmentOffset,
-    onSegmentSeek: handleSegmentSeek,
-    processingVideoRef,
-    processingSrc,
-    processedUrl: currentEdit.processedUrl,
-    selectedCount,
-    openFfmpegModal,
-    openFfmpegBatchModal,
-    toggleNotRelevant,
+	    onSegmentSeek: handleSegmentSeek,
+	    processingVideoRef,
+	    processingSrc,
+	    selectedCount,
+	    openFfmpegModal,
+	    openFfmpegBatchModal,
+	    toggleNotRelevant,
     addCircle,
     clearSegments,
     segmentDraft,
@@ -3624,19 +2387,25 @@ export default function App() {
     removeSegment,
     selectedElement,
     duplicateElement,
-    copyAttributes,
-    pasteAttributes,
-    copiedAttributes,
-    deleteElement,
-    updateElement
-  };
+	    copyAttributes,
+	    pasteAttributes,
+	    copiedAttributes,
+	    deleteElement,
+	    updateElement,
+      hotkeys,
+      setHotkeys,
+      hotkeyCaptureRef,
+      snowSpeed,
+      setSnowSpeed
+	  };
 
-  return (
-    <div
-      tabIndex={0}
-      className={`flex h-screen overflow-hidden ${isDark ? 'dark bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-800'
-        }`}
-    >
+	  return (
+	    <div
+	      tabIndex={0}
+	      className={`flex h-screen overflow-hidden ${isDark ? 'dark bg-slate-900 text-slate-100' : 'bg-slate-50 text-slate-800'
+	        }`}
+        style={{ '--snow-speed': snowSpeed }}
+	    >
       <AppOverlays
         hudText={hudText}
         notifications={notifications}
@@ -3666,16 +2435,23 @@ export default function App() {
         adminImportStats={adminImportStats}
         adminAiLoading={adminAiLoading}
         adminAiStats={adminAiStats}
+        adminAiQueue={adminAiQueue}
+        adminAiLastRequestAt={adminAiLastRequestAt}
+        adminAiLastError={adminAiLastError}
+        adminAiRemoteState={adminAiRemoteState}
         adminJobProgress={adminJobProgress}
         adminJob={adminJob}
         adminJobs={adminJobs}
         adminSheetFilter={adminSheetFilter}
         adminSheetFiltered={adminSheetFiltered}
         adminSnapshot={adminSnapshot}
-        adminShowSnapshot={adminShowSnapshot}
-        adminLogoLoading={adminLogoLoading}
-        adminLogoStats={adminLogoStats}
-        selectedCount={selectedCount}
+    adminShowSnapshot={adminShowSnapshot}
+    adminLogoLoading={adminLogoLoading}
+    adminLogoStats={adminLogoStats}
+    adminSyncState={adminSyncState}
+    importPickerRequest={importPickerRequest}
+    autoSyncAllowed={autoSyncAllowed}
+    selectedCount={selectedCount}
         activeVideo={activeVideo}
         getJobMeta={getJobMeta}
         parseNumericInput={parseNumericInput}
@@ -3690,14 +2466,19 @@ export default function App() {
         onSaveConfig={saveAdminConfig}
         onAddVideos={addVideosFromServer}
         onRunAiSegments={runAdminAiSegments}
+        onRunAiSegmentsRemote={runAdminAiSegmentsRemote}
+        onPingAiRemote={pingAdminAiRemote}
+        onStopAi={stopAdminAi}
+        onRetryAiFailed={retryAdminAiFailed}
         onOpenHistory={() => setAdminHistoryOpen(true)}
         onSelectJob={selectAdminJob}
         onLoadSheet={loadAdminSheet}
         onSheetFilterChange={setAdminSheetFilter}
         onToggleSnapshot={() => setAdminShowSnapshot(prev => !prev)}
         onLoadSnapshot={loadAdminSnapshot}
-        onSaveSnapshot={saveAdminSnapshot}
-        onApplySnapshot={applyAdminSnapshot}
+    onSaveSnapshot={saveAdminSnapshot}
+    onApplySnapshot={applyAdminSnapshot}
+    onToggleAutoSync={() => setAutoSyncAllowed(prev => !prev)}
         onRunLogo={runAdminLogoDetection}
         onCloseHistory={() => setAdminHistoryOpen(false)}
         getJobProgress={getJobProgress}

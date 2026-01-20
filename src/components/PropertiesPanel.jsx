@@ -1,16 +1,23 @@
-import React, { memo } from 'react';
+import React, { memo, useMemo } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   BoxSelect,
   Circle,
   Clipboard,
   Clock,
   Copy,
   Repeat,
+  Snowflake,
   Square,
   Target,
+  X,
   Trash2
 } from 'lucide-react';
 import { SEGMENT_MODES } from '../lib/editorConstants';
+import HotkeysSettings from './HotkeysSettings';
+import SnowSettings from './SnowSettings';
+import { formatHotkeyList, normalizeHotkeys } from '../features/editor/hotkeys';
 
 function PropertiesPanel({
   isDark,
@@ -43,8 +50,17 @@ function PropertiesPanel({
   deleteElement,
   updateElement,
   alignElement,
-  snapElementToGrid
+  snapElementToGrid,
+  hotkeys,
+  setHotkeys,
+  hotkeyCaptureRef,
+  snowSpeed,
+  setSnowSpeed
 }) {
+  const normalizedHotkeys = useMemo(() => normalizeHotkeys(hotkeys), [hotkeys]);
+  const markStartHint = formatHotkeyList(normalizedHotkeys.markStart);
+  const markEndHint = formatHotkeyList(normalizedHotkeys.markEnd);
+
   return (
     <div
       className={`w-full lg:w-80 border-l p-6 overflow-y-auto ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
@@ -192,7 +208,7 @@ function PropertiesPanel({
           )}
           {activeSegments.map((seg, idx) => (
             <div key={seg.id} className="flex items-center gap-2 text-[10px]">
-              <div className="text-slate-400 w-5 text-right">{idx + 1}</div>
+              <div className="text-slate-400 w-7 text-right">{idx + 1}</div>
               <input
                 type="number"
                 step="0.1"
@@ -218,25 +234,39 @@ function PropertiesPanel({
                   }`}
               />
               <button
+                onClick={() => updateSegment(seg.id, { isSnow: !seg.isSnow })}
+                className={`px-1.5 py-1 rounded border text-[10px] font-bold flex items-center gap-1 transition ${seg.isSnow
+                  ? isDark
+                    ? 'bg-sky-900/40 border-sky-700 text-sky-200'
+                    : 'bg-sky-100 border-sky-200 text-sky-700'
+                  : isDark
+                    ? 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'
+                    : 'bg-white border-slate-200 text-slate-500 hover:border-slate-400'
+                  }`}
+                title="Snow: додасть суфікс _snow для експорту цих сегментів"
+              >
+                <Snowflake className="w-3 h-3" />
+              </button>
+              <button
                 onClick={() => moveSegment(seg.id, -1)}
                 className="px-1 text-slate-400 hover:text-slate-700"
                 title="Вгору"
               >
-                Up
+                <ArrowUp className="w-3 h-3" />
               </button>
               <button
                 onClick={() => moveSegment(seg.id, 1)}
                 className="px-1 text-slate-400 hover:text-slate-700"
                 title="Вниз"
               >
-                Down
+                <ArrowDown className="w-3 h-3" />
               </button>
               <button
                 onClick={() => removeSegment(seg.id)}
-                className="px-1 text-red-500"
+                className="px-1 text-red-500 hover:text-red-600"
                 title="Видалити"
               >
-                X
+                <X className="w-3 h-3" />
               </button>
             </div>
           ))}
@@ -284,7 +314,7 @@ function PropertiesPanel({
           </div>
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-xs font-bold opacity-70">
-              <Clock className="w-3 h-3" /> Час появи (M /)
+              <Clock className="w-3 h-3" /> Час появи ({markStartHint} | {markEndHint})
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -294,9 +324,9 @@ function PropertiesPanel({
                     onClick={() => updateElement(selectedElement.id, { startTime: currentTime })}
                     className={`text-[10px] px-1 rounded flex items-center gap-0.5 ${isDark ? 'text-indigo-300 bg-indigo-900/50 hover:bg-indigo-900' : 'text-indigo-600 bg-indigo-50 hover:bg-indigo-100'
                       }`}
-                    title="Встановити поточний (M)"
+                    title={`Встановити поточний (${markStartHint})`}
                   >
-                    <Target className="w-3 h-3" /> M
+                    <Target className="w-3 h-3" /> {markStartHint}
                   </button>
                 </div>
                 <input
@@ -315,9 +345,9 @@ function PropertiesPanel({
                     onClick={() => updateElement(selectedElement.id, { endTime: currentTime })}
                     className={`text-[10px] px-1 rounded flex items-center gap-0.5 ${isDark ? 'text-indigo-300 bg-indigo-900/50 hover:bg-indigo-900' : 'text-indigo-600 bg-indigo-50 hover:bg-indigo-100'
                       }`}
-                    title="Встановити поточний (/)"
+                    title={`Встановити поточний (${markEndHint})`}
                   >
-                    <Target className="w-3 h-3" /> /
+                    <Target className="w-3 h-3" /> {markEndHint}
                   </button>
                 </div>
                 <input
@@ -457,6 +487,17 @@ function PropertiesPanel({
           Натисніть на фігуру на відео або таймлайні, щоб редагувати її
         </div>
       )}
+      <HotkeysSettings
+        isDark={isDark}
+        hotkeys={normalizedHotkeys}
+        setHotkeys={setHotkeys}
+        hotkeyCaptureRef={hotkeyCaptureRef}
+      />
+      <SnowSettings
+        isDark={isDark}
+        snowSpeed={snowSpeed}
+        setSnowSpeed={setSnowSpeed}
+      />
     </div>
   );
 }

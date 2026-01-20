@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { STORAGE_KEYS } from '../lib/editorConstants';
 import { normalizeName, saveToStorage } from '../lib/editorUtils';
 
-export default function usePlaylist({ suffixPresets = [], getFileKeyCounts }) {
+export default function usePlaylist({ suffixPresets = [], getFileKeyCounts, isSnowVideo }) {
   const [playlist, setPlaylist] = useState([]);
   const [currentId, setCurrentId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -38,6 +38,10 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts }) {
     if (!query) return playlist;
     return playlist.filter(p => normalizeName(p.name).includes(query));
   }, [playlist, searchQuery]);
+  const snowPlaylist = useMemo(() => {
+    const predicate = typeof isSnowVideo === 'function' ? isSnowVideo : p => !!p?.hasSnow;
+    return filteredPlaylist.filter(predicate);
+  }, [filteredPlaylist, isSnowVideo]);
   const multiChannelPlaylist = useMemo(
     () => filteredPlaylist.filter(p => (fileKeyCountsAll.get(p.fileKey) || 0) > 1),
     [filteredPlaylist, fileKeyCountsAll]
@@ -62,13 +66,14 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts }) {
   const activeGroupItems = useMemo(() => {
     if (activeGroupKey === '__all__') return filteredPlaylist;
     if (activeGroupKey === '__multi__') return multiChannelPlaylist;
+    if (activeGroupKey === '__snow__') return snowPlaylist;
     const entry = groupedPlaylist.find(([key]) => key === activeGroupKey);
     return entry ? entry[1] : [];
-  }, [groupedPlaylist, activeGroupKey, filteredPlaylist, multiChannelPlaylist]);
+  }, [groupedPlaylist, activeGroupKey, filteredPlaylist, multiChannelPlaylist, snowPlaylist]);
 
   useEffect(() => {
     if (groupedPlaylist.length === 0) return;
-    if (activeGroupKey === '__all__' || activeGroupKey === '__multi__') return;
+    if (activeGroupKey === '__all__' || activeGroupKey === '__multi__' || activeGroupKey === '__snow__') return;
     const exists = groupedPlaylist.some(([key]) => key === activeGroupKey);
     if (!exists) setActiveGroupKey(groupedPlaylist[0][0]);
   }, [groupedPlaylist, activeGroupKey]);
@@ -167,6 +172,7 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts }) {
       sheetCameraType: v.sheetCameraType || '',
       sheetStatus: v.sheetStatus || '',
       notRelevant: !!v.notRelevant,
+      hasSnow: !!v.hasSnow,
       channels: Array.isArray(v.channels) ? v.channels : [],
       source: v.source || '',
       sourcePath: v.sourcePath || '',
@@ -210,6 +216,7 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts }) {
     isAllSelected,
     allCount: filteredPlaylist.length,
     multiCount: multiChannelPlaylist.length,
+    snowCount: snowPlaylist.length,
     playlistVisibleItems,
     playlistPaddingTop,
     playlistPaddingBottom,

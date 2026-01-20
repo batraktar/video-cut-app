@@ -31,6 +31,7 @@ export default function TopBar({
   isCanvasExpanded,
   selectedCount,
   adminLoading,
+  adminSyncState,
   onCopyVideoName,
   onSetVideoSuffix,
   onCopyText,
@@ -41,12 +42,34 @@ export default function TopBar({
   onToggleViewMode,
   onRunAdminFfmpeg,
   onAddVideosFromServer,
+  onOpenImportPicker,
   onOpenAdmin,
   onOpenAdminAi,
   onOpenFocusMenu,
   onToggleFocusMode,
   onToggleTheme
 }) {
+  const syncTimeLabel = adminSyncState?.updatedAt
+    ? new Date(adminSyncState.updatedAt).toLocaleTimeString('uk-UA', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      })
+    : '—';
+  const syncStatus = adminSyncState?.status || 'idle';
+  const syncTextClass =
+    syncStatus === 'ok'
+      ? 'text-emerald-600 bg-emerald-50 border-emerald-200'
+      : syncStatus === 'error'
+        ? 'text-red-600 bg-red-50 border-red-200'
+        : 'text-slate-500 bg-slate-100 border-slate-200';
+  const syncDotClass =
+    syncStatus === 'ok'
+      ? 'bg-emerald-500'
+      : syncStatus === 'error'
+        ? 'bg-red-500'
+        : 'bg-slate-400';
+
   return (
     <div
       className={`${isFocusMode ? 'h-12' : 'h-16'} border-b flex items-center justify-between px-6 flex-shrink-0 ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
@@ -75,6 +98,10 @@ export default function TopBar({
               <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                 <span className="flex items-center gap-1 text-[10px] text-green-600 bg-green-100 dark:bg-green-900/30 dark:text-green-400 px-1.5 py-0.5 rounded font-medium border border-green-200 dark:border-green-800">
                   <ShieldCheck className="w-3 h-3" /> Local Processing
+                </span>
+                <span className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-medium border ${syncTextClass}`}>
+                  <span className={`inline-block w-2 h-2 rounded-full ${syncDotClass}`} />
+                  Sync: {syncTimeLabel}
                 </span>
                 <div className="flex items-center gap-1">
                   {suffixPresets.map(preset => {
@@ -226,7 +253,7 @@ export default function TopBar({
             <Play className="w-4 h-4" />
           </button>
           <button
-            onClick={onAddVideosFromServer}
+            onClick={onOpenImportPicker || onAddVideosFromServer}
             disabled={adminLoading}
             className={`p-2 rounded-lg border transition disabled:opacity-40 disabled:cursor-not-allowed ${isDark
               ? 'border-slate-700 text-slate-300 hover:bg-slate-800'

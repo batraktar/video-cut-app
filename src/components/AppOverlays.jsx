@@ -35,6 +35,10 @@ export default function AppOverlays({
   adminImportStats,
   adminAiLoading,
   adminAiStats,
+  adminAiQueue,
+  adminAiLastRequestAt,
+  adminAiLastError,
+  adminAiRemoteState,
   adminJobProgress,
   adminJob,
   adminJobs,
@@ -44,6 +48,9 @@ export default function AppOverlays({
   adminShowSnapshot,
   adminLogoLoading,
   adminLogoStats,
+  adminSyncState,
+  importPickerRequest,
+  autoSyncAllowed,
   selectedCount,
   activeVideo,
   getJobMeta,
@@ -56,6 +63,10 @@ export default function AppOverlays({
   onSaveConfig,
   onAddVideos,
   onRunAiSegments,
+  onRunAiSegmentsRemote,
+  onPingAiRemote,
+  onStopAi,
+  onRetryAiFailed,
   onOpenHistory,
   onSelectJob,
   onLoadSheet,
@@ -64,6 +75,7 @@ export default function AppOverlays({
   onLoadSnapshot,
   onSaveSnapshot,
   onApplySnapshot,
+  onToggleAutoSync,
   onRunLogo,
   onCloseHistory,
   getJobProgress,
@@ -111,6 +123,10 @@ export default function AppOverlays({
         adminImportStats={adminImportStats}
         adminAiLoading={adminAiLoading}
         adminAiStats={adminAiStats}
+        adminAiQueue={adminAiQueue}
+        adminAiLastRequestAt={adminAiLastRequestAt}
+        adminAiLastError={adminAiLastError}
+        adminAiRemoteState={adminAiRemoteState}
         adminJobProgress={adminJobProgress}
         adminJob={adminJob}
         adminJobs={adminJobs}
@@ -120,6 +136,9 @@ export default function AppOverlays({
         adminShowSnapshot={adminShowSnapshot}
         adminLogoLoading={adminLogoLoading}
         adminLogoStats={adminLogoStats}
+        adminSyncState={adminSyncState}
+        importPickerRequest={importPickerRequest}
+        autoSyncAllowed={autoSyncAllowed}
         selectedCount={selectedCount}
         activeVideo={activeVideo}
         getJobMeta={getJobMeta}
@@ -132,6 +151,10 @@ export default function AppOverlays({
         onSaveConfig={onSaveConfig}
         onAddVideos={onAddVideos}
         onRunAiSegments={onRunAiSegments}
+        onRunAiSegmentsRemote={onRunAiSegmentsRemote}
+        onPingAiRemote={onPingAiRemote}
+        onStopAi={onStopAi}
+        onRetryAiFailed={onRetryAiFailed}
         onOpenHistory={onOpenHistory}
         onSelectJob={onSelectJob}
         onLoadSheet={onLoadSheet}
@@ -140,6 +163,7 @@ export default function AppOverlays({
         onLoadSnapshot={onLoadSnapshot}
         onSaveSnapshot={onSaveSnapshot}
         onApplySnapshot={onApplySnapshot}
+        onToggleAutoSync={onToggleAutoSync}
         onRunLogo={onRunLogo}
       />
       <AdminHistoryModal

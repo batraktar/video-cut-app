@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { CheckSquare, Film, Plus, Square as SquareIcon, Trash2 } from 'lucide-react';
+import { CheckSquare, Film, Plus, Snowflake, Square as SquareIcon, Trash2 } from 'lucide-react';
 
 function SidebarPlaylist({
   isFocusMode,
@@ -14,6 +14,7 @@ function SidebarPlaylist({
   activeGroupKey,
   allCount,
   multiCount,
+  snowCount,
   isAllSelected,
   searchQuery,
   onSearchChange,
@@ -48,6 +49,18 @@ function SidebarPlaylist({
   onDeleteSelected,
   onFileChange
 }) {
+  const hasSnowSegments = videoId => {
+    const edit = edits?.[videoId];
+    const sets = edit?.segmentSets;
+    if (sets && typeof sets === 'object') {
+      return Object.values(sets).some(
+        list => Array.isArray(list) && list.some(seg => !!seg?.isSnow)
+      );
+    }
+    const flat = edit?.segments;
+    return Array.isArray(flat) && flat.some(seg => !!seg?.isSnow);
+  };
+
   return (
     <>
       {isFocusMode && focusSideOpen && (
@@ -157,6 +170,23 @@ function SidebarPlaylist({
                 >
                   2+ канали ({multiCount})
                 </button>
+                <button
+                  onClick={() => onSetActiveGroupKey('__snow__')}
+                  disabled={snowCount === 0}
+                  className={`px-2 py-1 rounded-full text-[10px] font-bold border disabled:opacity-40 ${activeGroupKey === '__snow__'
+                    ? isDark
+                      ? 'bg-sky-600 border-sky-500 text-white'
+                      : 'bg-sky-600 border-sky-500 text-white'
+                    : isDark
+                      ? 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'
+                      : 'bg-white border-slate-200 text-slate-500 hover:border-slate-400'
+                    }`}
+                  title="Відео зі snow сегментами або snow лейблом"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <Snowflake className="w-3 h-3" /> snow ({snowCount})
+                  </span>
+                </button>
                 {groupedPlaylist.map(([groupKey, items]) => {
                   const label = groupKey === '__none__' ? 'Без суфіксу' : groupKey;
                   const isActive = groupKey === activeGroupKey;
@@ -198,7 +228,7 @@ function SidebarPlaylist({
             {activeGroupItems.length > 0 && (
               <>
                 <div style={{ height: `${playlistPaddingTop}px` }} />
-                {playlistVisibleItems.map(vid => {
+	                {playlistVisibleItems.map(vid => {
                   const meta = edits[vid.id]?.meta;
                   const sizeLabel =
                     meta?.width && meta?.height ? `${meta.width}x${meta.height}` : '';
@@ -210,10 +240,16 @@ function SidebarPlaylist({
                       ? 'ring-1 ring-red-500/70 bg-red-900/30'
                       : 'ring-1 ring-red-400 bg-red-50'
                     : '';
+	                  const isSnow = !!vid.hasSnow || hasSnowSegments(vid.id);
+	                  const snowClass = isSnow
+	                    ? isDark
+	                      ? 'ring-1 ring-sky-400/60 bg-sky-900/20'
+	                      : 'ring-1 ring-sky-300 bg-sky-50'
+	                    : '';
                   return (
-                    <div key={vid.id} style={{ height: `${playlistItemHeight}px` }}>
-                      <div
-                        onClick={() => switchVideo(vid.id)}
+	                    <div key={vid.id} style={{ height: `${playlistItemHeight}px` }}>
+	                      <div
+	                        onClick={() => switchVideo(vid.id)}
                         className={`h-full p-3 rounded-lg cursor-pointer group relative flex items-start gap-2 transition ${currentId === vid.id
                           ? isDark
                             ? 'bg-indigo-900/50 border border-indigo-700'
@@ -221,7 +257,7 @@ function SidebarPlaylist({
                           : isDark
                             ? 'hover:bg-slate-800 border border-transparent'
                             : 'hover:bg-slate-50 border border-transparent'
-                          } ${dragOverId === vid.id && draggingId !== vid.id ? 'ring-2 ring-indigo-400' : ''} ${dangerClass}`}
+	                          } ${dragOverId === vid.id && draggingId !== vid.id ? 'ring-2 ring-indigo-400' : ''} ${dangerClass} ${snowClass}`}
                         draggable
                         onDragStart={e => {
                           setDraggingId(vid.id);
@@ -255,16 +291,21 @@ function SidebarPlaylist({
                           {vid.checked ? <CheckSquare className="w-5 h-5" /> : <SquareIcon className="w-5 h-5" />}
                         </button>
                         <div className="flex-1 min-w-0">
-                          <div
-                            className={`font-medium text-sm truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}
-                            title={getVideoTooltip(vid)}
-                          >
+	                          <div
+	                            className={`font-medium text-sm truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}
+	                            title={getVideoTooltip(vid)}
+	                          >
                             {getDisplayName(vid.name)}
+	                            {isSnow && (
+	                              <span className={`ml-2 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border ${isDark ? 'bg-sky-900/40 text-sky-200 border-sky-700' : 'bg-sky-100 text-sky-700 border-sky-200'}`}>
+	                                <Snowflake className="w-3 h-3" /> SNOW
+	                              </span>
+	                            )}
                             {vid.sheetHasBoth && (
                               <span className="ml-2 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
                                 BOTH
                               </span>
-                            )}
+	                            )}
                           </div>
                           <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2 overflow-hidden whitespace-nowrap">
                             <span>ID: {getShortId(vid.id)}</span>

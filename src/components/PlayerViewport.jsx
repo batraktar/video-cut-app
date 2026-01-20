@@ -26,6 +26,19 @@ function PlayerViewport({
   onFocusResizeStart,
   visibleElements
 }) {
+  const hasSnowSegments = edit => {
+    if (!edit) return false;
+    const sets = edit.segmentSets;
+    if (sets && typeof sets === 'object') {
+      return Object.values(sets).some(
+        list => Array.isArray(list) && list.some(seg => !!seg?.isSnow)
+      );
+    }
+    const flat = edit.segments;
+    return Array.isArray(flat) && flat.some(seg => !!seg?.isSnow);
+  };
+  const showSnow = !!activeVideo?.hasSnow || hasSnowSegments(currentEdit);
+
   return (
     <div
       ref={viewportRef}
@@ -35,9 +48,15 @@ function PlayerViewport({
       onMouseEnter={onViewportMouseEnter}
       onMouseLeave={onViewportMouseLeave}
     >
+      {showSnow && (
+        <div
+          className="snow-overlay absolute inset-0 pointer-events-none z-0"
+          aria-hidden="true"
+        />
+      )}
       <div
         ref={overlayRef}
-        className={`relative shadow-2xl inline-block ${zoom > 1 ? 'cursor-grab active:cursor-grabbing' : ''}`}
+        className={`relative z-10 shadow-2xl inline-block ${zoom > 1 ? 'cursor-grab active:cursor-grabbing' : ''}`}
         style={getPreviewStyle()}
         onMouseDown={onPanStart}
         onContextMenu={e => e.preventDefault()}

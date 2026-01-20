@@ -167,6 +167,7 @@ const getConfig = async () => {
       aiPythonPath: payload.aiPythonPath ?? '',
       aiFps: typeof payload.aiFps === 'number' ? payload.aiFps : 1,
       aiMinDuration: typeof payload.aiMinDuration === 'number' ? payload.aiMinDuration : 2,
+      aiRemoteUrl: typeof payload.aiRemoteUrl === 'string' ? payload.aiRemoteUrl : '',
       logoTemplatePath: payload.logoTemplatePath ?? '',
       logoFps: typeof payload.logoFps === 'number' ? payload.logoFps : 2,
       logoSize: typeof payload.logoSize === 'number' ? payload.logoSize : 640,
@@ -184,6 +185,7 @@ const getConfig = async () => {
       aiPythonPath: '',
       aiFps: 1,
       aiMinDuration: 2,
+      aiRemoteUrl: '',
       logoTemplatePath: '',
       logoFps: 2,
       logoSize: 640,
@@ -207,6 +209,8 @@ const saveConfig = async updates => {
     aiFps: typeof updates.aiFps === 'number' ? updates.aiFps : current.aiFps,
     aiMinDuration:
       typeof updates.aiMinDuration === 'number' ? updates.aiMinDuration : current.aiMinDuration,
+    aiRemoteUrl:
+      typeof updates.aiRemoteUrl === 'string' ? updates.aiRemoteUrl : current.aiRemoteUrl,
     logoTemplatePath:
       typeof updates.logoTemplatePath === 'string'
         ? updates.logoTemplatePath

@@ -72,7 +72,12 @@ export default function WorkspaceArea({
   pasteAttributes,
   copiedAttributes,
   deleteElement,
-  updateElement
+  updateElement,
+  hotkeys,
+  setHotkeys,
+  hotkeyCaptureRef,
+  snowSpeed,
+  setSnowSpeed
 }) {
   if (!activeVideo) {
     return <EmptyState onFileChange={onFileChange} />;
@@ -145,9 +150,9 @@ export default function WorkspaceArea({
 
       {/* RIGHT: PROPERTIES */}
       {!isFocusMode && (
-        <PropertiesPanel
-          isDark={isDark}
-          activeVideo={activeVideo}
+	        <PropertiesPanel
+	          isDark={isDark}
+	          activeVideo={activeVideo}
           selectedCount={selectedCount}
           openFfmpegModal={openFfmpegModal}
           openFfmpegBatchModal={openFfmpegBatchModal}
@@ -172,11 +177,16 @@ export default function WorkspaceArea({
           duplicateElement={duplicateElement}
           copyAttributes={copyAttributes}
           pasteAttributes={pasteAttributes}
-          copiedAttributes={copiedAttributes}
-          deleteElement={deleteElement}
-          updateElement={updateElement}
-        />
-      )}
-    </div>
-  );
+	          copiedAttributes={copiedAttributes}
+	          deleteElement={deleteElement}
+	          updateElement={updateElement}
+	          hotkeys={hotkeys}
+	          setHotkeys={setHotkeys}
+	          hotkeyCaptureRef={hotkeyCaptureRef}
+	          snowSpeed={snowSpeed}
+	          setSnowSpeed={setSnowSpeed}
+	        />
+	      )}
+	    </div>
+	  );
 }

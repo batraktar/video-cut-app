@@ -1,6 +1,8 @@
 import React, { memo } from 'react';
 import { Pause, Play } from 'lucide-react';
 
+const SNOW_ICON_DATA = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23bae6fd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2v20M5 5l14 14M19 5L5 19M2 12h20'/%3E%3C/svg%3E";
+
 function PlayerTimeline({
   isFocusMode,
   isDark,
@@ -165,7 +167,18 @@ function PlayerTimeline({
                   key={`${group.meta.id}-${seg.id}`}
                   className={`absolute top-7 h-3 rounded border ${group.meta.track} ${isActive ? 'cursor-grab' : 'pointer-events-none opacity-40'
                     }`}
-                  style={{ left: `${getPct(seg.start)}%`, width: `${getPct(seg.end - seg.start)}%` }}
+                  style={{
+                    left: `${getPct(seg.start)}%`,
+                    width: `${getPct(seg.end - seg.start)}%`,
+                    ...(seg.isSnow
+                      ? {
+                          backgroundImage: `url("${SNOW_ICON_DATA}")`,
+                          backgroundRepeat: 'no-repeat',
+                          backgroundPosition: 'right 4px center',
+                          backgroundSize: '12px 12px'
+                        }
+                      : null)
+                  }}
                   onMouseDown={
                     isActive
                       ? e => onDragStart(e, { type: 'segment', id: seg.id, action: 'move' })
@@ -234,9 +247,10 @@ function PlayerTimeline({
               return (
                 <div
                   key={seg.id}
-                  className={`absolute top-2 bottom-2 rounded border ${activeSegmentMeta.track}`}
+                  className={`absolute top-2 bottom-2 rounded border relative ${activeSegmentMeta.track}`}
                   style={{ left: `${left}%`, width: `${width}%` }}
-                />
+                >
+                </div>
               );
             })}
             <div

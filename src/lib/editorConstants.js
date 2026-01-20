@@ -7,6 +7,7 @@ export const DEFAULT_ADMIN_CONFIG = {
   aiPythonPath: '',
   aiFps: 1,
   aiMinDuration: 2,
+  aiRemoteUrl: '',
   logoTemplatePath: 'image.png',
   logoFps: 2,
   logoSize: 640,
@@ -45,7 +46,8 @@ export const DEFAULT_EDIT_STATE = {
 export const STORAGE_KEYS = {
   edits: 'videoCut.edits.v1',
   prefs: 'videoCut.prefs.v1',
-  playlist: 'videoCut.playlist.v1'
+  playlist: 'videoCut.playlist.v1',
+  hotkeys: 'videoCut.hotkeys.v1'
 };
 
 export const SUFFIX_PRESETS = [

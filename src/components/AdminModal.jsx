@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Layers, Save } from 'lucide-react';
+import { SEGMENT_MODES } from '../lib/editorConstants';
 
 export default function AdminModal({
   open,
@@ -13,6 +14,10 @@ export default function AdminModal({
   adminImportStats,
   adminAiLoading,
   adminAiStats,
+  adminAiQueue,
+  adminAiLastRequestAt,
+  adminAiLastError,
+  adminAiRemoteState,
   adminJobProgress,
   adminJob,
   adminJobs,
@@ -22,6 +27,9 @@ export default function AdminModal({
   adminShowSnapshot,
   adminLogoLoading,
   adminLogoStats,
+  adminSyncState,
+  importPickerRequest,
+  autoSyncAllowed,
   selectedCount,
   activeVideo,
   getJobMeta,
@@ -34,6 +42,10 @@ export default function AdminModal({
   onSaveConfig,
   onAddVideos,
   onRunAiSegments,
+  onRunAiSegmentsRemote,
+  onPingAiRemote,
+  onStopAi,
+  onRetryAiFailed,
   onOpenHistory,
   onSelectJob,
   onLoadSheet,
@@ -42,10 +54,17 @@ export default function AdminModal({
   onLoadSnapshot,
   onSaveSnapshot,
   onApplySnapshot,
+  onToggleAutoSync,
   onRunLogo
 }) {
   if (!open) return null;
   const overlayRef = useRef(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [selectedModes, setSelectedModes] = useState(() => new Set());
+  const [snowFilter, setSnowFilter] = useState('any');
+  const [onlySheet, setOnlySheet] = useState(true);
+  const [pickerError, setPickerError] = useState('');
+  const lastPickerRequestRef = useRef(0);
 
   useEffect(() => {
     const handleKey = e => {
@@ -55,9 +74,107 @@ export default function AdminModal({
     return () => window.removeEventListener('keydown', handleKey);
   }, [onClose]);
 
+  useEffect(() => {
+    if (!importPickerRequest) return;
+    if (importPickerRequest === lastPickerRequestRef.current) return;
+    lastPickerRequestRef.current = importPickerRequest;
+    onLoadSheet?.();
+    setPickerOpen(true);
+  }, [importPickerRequest, onLoadSheet]);
+
   const handleOverlayMouseDown = e => {
     if (e.target === overlayRef.current) onClose();
   };
+
+  const handleToggleMode = mode => {
+    setSelectedModes(prev => {
+      const next = new Set(prev);
+      if (next.has(mode)) next.delete(mode);
+      else next.add(mode);
+      return next;
+    });
+  };
+
+  const handleOpenPicker = () => {
+    onLoadSheet?.();
+    setPickerError('');
+    setPickerOpen(true);
+  };
+
+  const handleApplyPicker = async () => {
+    if (!adminConfig?.baseDir) {
+      setPickerError('Спочатку вкажіть робочу теку та збережіть.');
+      return;
+    }
+    if (onSaveConfig) {
+      await onSaveConfig();
+    }
+    const modes = Array.from(selectedModes);
+    onAddVideos({ modes, snow: snowFilter, onlySheet });
+    setPickerOpen(false);
+  };
+
+  const syncTimeLabel = adminSyncState?.updatedAt
+    ? new Date(adminSyncState.updatedAt).toLocaleTimeString('uk-UA', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      })
+    : '—';
+  const syncStatus = adminSyncState?.status || 'idle';
+  const syncLabel = `Синхронізація: ${syncTimeLabel}`;
+  const syncDotClass =
+    syncStatus === 'syncing'
+      ? 'bg-slate-400'
+      : syncStatus === 'ok'
+        ? 'bg-emerald-500'
+        : syncStatus === 'error'
+          ? 'bg-red-500'
+          : 'bg-slate-400';
+  const syncTextClass =
+    syncStatus === 'ok'
+      ? 'text-emerald-400'
+      : syncStatus === 'error'
+        ? 'text-red-400'
+        : 'text-slate-400';
+  const aiTargetLabel = selectedCount > 0 ? `(${selectedCount})` : '';
+  const aiLocalLabel = adminAiLoading ? 'AI працює...' : `AI локально ${aiTargetLabel}`.trim();
+  const aiRemoteLabel = adminAiLoading ? 'AI працює...' : `AI Colab ${aiTargetLabel}`.trim();
+  const hasAiTarget = selectedCount > 0 || !!activeVideo;
+  const aiQueue = Array.isArray(adminAiQueue) ? adminAiQueue : [];
+  const aiQueueTotal = aiQueue.length;
+  const aiQueueDone = aiQueue.filter(item => item.status === 'done').length;
+  const aiQueueFailed = aiQueue.filter(item => item.status === 'error').length;
+  const aiQueuePending = aiQueue.filter(item => item.status === 'pending').length;
+  const aiQueueRunning = aiQueue.filter(item => item.status === 'running').length;
+  const aiQueueProgress = aiQueueTotal
+    ? Math.round(((aiQueueDone + aiQueueFailed) / aiQueueTotal) * 100)
+    : 0;
+  const aiLastRequestLabel = adminAiLastRequestAt
+    ? new Date(adminAiLastRequestAt).toLocaleTimeString('uk-UA', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      })
+    : '—';
+  const remoteStatus = adminAiRemoteState?.status || 'idle';
+  const remoteDotClass =
+    remoteStatus === 'ok'
+      ? 'bg-emerald-500'
+      : remoteStatus === 'error'
+        ? 'bg-rose-500'
+        : remoteStatus === 'checking'
+          ? 'bg-amber-400'
+          : 'bg-slate-400';
+  const remoteLabel =
+    remoteStatus === 'ok'
+      ? 'Online'
+      : remoteStatus === 'error'
+        ? 'Offline'
+        : remoteStatus === 'checking'
+          ? 'Checking'
+          : '—';
+  const aiErrorMessage = adminAiLastError || adminAiRemoteState?.lastError || '';
 
   return (
     <div
@@ -142,7 +259,7 @@ export default function AdminModal({
                 Зберегти
               </button>
               <button
-                onClick={onAddVideos}
+                onClick={handleOpenPicker}
                 className="px-3 py-2 rounded text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white"
                 disabled={adminLoading}
               >
@@ -155,13 +272,16 @@ export default function AdminModal({
                   <span className="text-slate-400">Всього: <b className="text-slate-200">{adminImportStats.total}</b></span>
                   <span className="text-emerald-400">Додано: <b>{adminImportStats.added}</b></span>
                   <span className="text-sky-400">В таблиці: <b>{adminImportStats.inSheet}</b></span>
-                  <span className="text-rose-400">Немає в табл: <b>{adminImportStats.unmatched?.length || 0}</b></span>
+                  <span className="text-amber-400">Фільтр: <b>{adminImportStats.filteredOut || 0}</b></span>
+                  <span className="text-rose-400">
+                    Немає в табл: <b>{(adminImportStats.unmatchedCount ?? adminImportStats.unmatched?.length) || 0}</b>
+                  </span>
                 </div>
-                {adminImportStats.unmatched?.length > 0 && (
+                {(adminImportStats.unmatchedSample?.length || adminImportStats.unmatched?.length) > 0 && (
                   <div className="mt-2">
                     <div className="text-[9px] text-slate-500 uppercase font-bold mb-1">Файли, яких немає в таблиці:</div>
                     <div className="max-h-20 overflow-auto text-[9px] text-rose-300/80 font-mono bg-black/20 p-1 rounded">
-                      {adminImportStats.unmatched.join(', ')}
+                      {(adminImportStats.unmatchedSample || adminImportStats.unmatched || []).join(', ')}
                     </div>
                   </div>
                 )}
@@ -169,6 +289,102 @@ export default function AdminModal({
             )}
           </div>
         </div>
+
+        {pickerOpen && (
+          <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50">
+            <div className={`w-full max-w-lg rounded-xl p-4 shadow-2xl ${isDark ? 'bg-slate-900 text-slate-100' : 'bg-white text-slate-800'}`}>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-bold">Фільтр перед імпортом</div>
+                <button
+                  onClick={() => setPickerOpen(false)}
+                  className={`text-lg leading-none ${isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-400 hover:text-slate-700'}`}
+                  title="Закрити"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="mt-3 text-xs text-slate-400">
+                Оберіть канали/сніг. Якщо канали не вибрані — імпортуються всі.
+              </div>
+              {pickerError && (
+                <div className="mt-2 text-[10px] text-rose-400">{pickerError}</div>
+              )}
+              <div className="mt-3">
+                <div className="text-xs font-bold mb-2">Канали</div>
+                <div className="flex flex-wrap gap-2">
+                  {SEGMENT_MODES.map(mode => {
+                    const active = selectedModes.has(mode.id);
+                    return (
+                      <button
+                        key={mode.id}
+                        onClick={() => handleToggleMode(mode.id)}
+                        className={`px-2 py-1 rounded-full border text-[10px] font-bold transition ${active
+                          ? isDark
+                            ? 'bg-indigo-600 border-indigo-500 text-white'
+                            : 'bg-indigo-600 border-indigo-500 text-white'
+                          : isDark
+                            ? 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'
+                            : 'bg-white border-slate-200 text-slate-500 hover:border-slate-400'
+                          }`}
+                      >
+                        {mode.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="mt-4">
+                <div className="text-xs font-bold mb-2">Snow</div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { id: 'any', label: 'Будь-які' },
+                    { id: 'only', label: 'Тільки snow' },
+                    { id: 'exclude', label: 'Без snow' }
+                  ].map(option => (
+                    <button
+                      key={option.id}
+                      onClick={() => setSnowFilter(option.id)}
+                      className={`px-2 py-1 rounded-full border text-[10px] font-bold transition ${snowFilter === option.id
+                        ? isDark
+                          ? 'bg-sky-600 border-sky-500 text-white'
+                          : 'bg-sky-600 border-sky-500 text-white'
+                        : isDark
+                          ? 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'
+                          : 'bg-white border-slate-200 text-slate-500 hover:border-slate-400'
+                        }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-4 flex items-center justify-between">
+                <label className="flex items-center gap-2 text-[10px] text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={onlySheet}
+                    onChange={e => setOnlySheet(e.target.checked)}
+                  />
+                  Тільки з таблиці
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setPickerOpen(false)}
+                    className="px-3 py-2 rounded text-xs font-bold bg-slate-700 hover:bg-slate-600 text-white"
+                  >
+                    Скасувати
+                  </button>
+                  <button
+                    onClick={handleApplyPicker}
+                    className="px-3 py-2 rounded text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white"
+                  >
+                    Імпортувати
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           <div className={`rounded-lg border p-3 md:col-span-2 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
@@ -216,9 +432,26 @@ export default function AdminModal({
               <button
                 onClick={onRunAiSegments}
                 className="px-3 py-2 rounded text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white"
-                disabled={adminAiLoading || adminLoading || (selectedCount === 0 && !activeVideo)}
+                disabled={adminAiLoading || adminLoading || !hasAiTarget}
               >
-                {adminAiLoading ? 'AI працює...' : selectedCount > 0 ? `AI обрані (${selectedCount})` : 'AI поточне'}
+                {aiLocalLabel}
+              </button>
+            </div>
+            <div className="mt-2 grid gap-2 md:grid-cols-4">
+              <input
+                type="text"
+                value={adminConfig.aiRemoteUrl || ''}
+                onChange={e => onConfigChange(prev => ({ ...prev, aiRemoteUrl: e.target.value }))}
+                className={`md:col-span-3 w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-white border-slate-200'}`}
+                placeholder="Colab URL (https://xxxx.ngrok-free.app)"
+              />
+              <button
+                onClick={onRunAiSegmentsRemote}
+                className="px-3 py-2 rounded text-xs font-bold bg-sky-600 hover:bg-sky-700 text-white"
+                disabled={adminAiLoading || adminLoading || !hasAiTarget || !adminConfig.aiRemoteUrl}
+                title={!adminConfig.aiRemoteUrl ? 'Вкажіть Colab URL' : ''}
+              >
+                {aiRemoteLabel}
               </button>
             </div>
             <div className="mt-1 text-[10px] text-slate-400">
@@ -227,6 +460,82 @@ export default function AdminModal({
             {adminAiStats && (
               <div className="mt-1 text-[10px] text-slate-400">
                 Оброблено відео: {adminAiStats.processed}
+              </div>
+            )}
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-slate-400">
+              <span className="inline-flex items-center gap-1">
+                <span className={`h-2 w-2 rounded-full ${remoteDotClass}`} />
+                Colab: {remoteLabel}
+              </span>
+              <button
+                onClick={onPingAiRemote}
+                className="px-2 py-1 rounded border text-[10px] font-bold border-slate-400/40 text-slate-400 hover:border-slate-300"
+                disabled={!adminConfig.aiRemoteUrl || adminAiLoading}
+              >
+                Ping
+              </button>
+              <span>Останній запит: {aiLastRequestLabel}</span>
+            </div>
+            {aiErrorMessage && (
+              <div className="mt-1 text-[10px] text-rose-400">
+                Помилка: {aiErrorMessage}
+              </div>
+            )}
+            {aiQueueTotal > 0 && (
+              <div className="mt-2 rounded border border-slate-200/20 bg-slate-900/20 p-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                  <span>
+                    Черга AI: {aiQueueDone}/{aiQueueTotal} • В роботі {aiQueueRunning} • Очікує {aiQueuePending} • Помилки {aiQueueFailed}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={onStopAi}
+                      className="px-2 py-1 rounded text-[10px] font-bold bg-rose-600/80 hover:bg-rose-600 text-white"
+                      disabled={!adminAiLoading}
+                    >
+                      Стоп
+                    </button>
+                    <button
+                      onClick={onRetryAiFailed}
+                      className="px-2 py-1 rounded text-[10px] font-bold bg-amber-500/80 hover:bg-amber-500 text-white"
+                      disabled={adminAiLoading || aiQueueFailed === 0}
+                    >
+                      Повторити помилки
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-2 h-1 w-full rounded-full bg-slate-700/50 overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 transition-all duration-300"
+                    style={{ width: `${aiQueueProgress}%` }}
+                  />
+                </div>
+                <div className="mt-2 max-h-28 overflow-auto text-[10px] text-slate-400">
+                  {aiQueue.map(item => (
+                    <div key={item.id} className="flex items-center justify-between gap-2">
+                      <span className="truncate">{item.name}</span>
+                      <span
+                        className={`shrink-0 ${
+                          item.status === 'done'
+                            ? 'text-emerald-400'
+                            : item.status === 'running'
+                              ? 'text-amber-400'
+                              : item.status === 'error'
+                                ? 'text-rose-400'
+                                : 'text-slate-400'
+                        }`}
+                      >
+                        {item.status === 'done'
+                          ? 'готово'
+                          : item.status === 'running'
+                            ? 'в роботі'
+                            : item.status === 'error'
+                              ? 'помилка'
+                              : 'очікує'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -361,6 +670,10 @@ export default function AdminModal({
             <div className="mt-2 text-[10px] text-slate-400">
               Оновлено: {adminSnapshot?.updatedAt || '—'}
             </div>
+            <div className={`mt-1 flex items-center gap-2 text-[10px] ${syncTextClass}`}>
+              <span className={`inline-block w-2 h-2 rounded-full ${syncDotClass}`} />
+              <span>{syncLabel}</span>
+            </div>
             <div className="mt-2 flex flex-wrap gap-2">
               <button
                 onClick={onLoadSnapshot}
@@ -382,6 +695,17 @@ export default function AdminModal({
                 disabled={adminLoading || !adminSnapshot?.payload}
               >
                 Застосувати стан
+              </button>
+              <button
+                onClick={onToggleAutoSync}
+                className={`px-3 py-2 rounded text-xs font-bold border ${autoSyncAllowed
+                  ? 'bg-emerald-600 border-emerald-500 text-white'
+                  : 'bg-slate-700 border-slate-600 text-slate-200'
+                  }`}
+                disabled={adminLoading}
+                title="Автосинхронізація"
+              >
+                Автосинк: {autoSyncAllowed ? 'ON' : 'OFF'}
               </button>
             </div>
             {adminShowSnapshot && (

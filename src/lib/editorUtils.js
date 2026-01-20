@@ -239,13 +239,18 @@ export const buildChannelsFromEntries = entries => {
     if (!entry) return;
     const mode = resolveSegmentModeFromMeta(entry.analogDigital, entry.cameraType);
     if (!mode || byMode.has(mode)) return;
+    const rawLabels = entry.labels ? String(entry.labels) : '';
+    const normalizedLabels = normalizeName(rawLabels);
+    const hasSnowLabel = normalizedLabels.includes('snow') || normalizedLabels.includes('сніг');
     byMode.set(mode, {
       mode,
       suffix: resolveSuffixFromMode(entry.analogDigital, entry.cameraType),
       sheetMode: entry.analogDigital || '',
       sheetCameraType: entry.cameraType || '',
       sheetStatus: entry.status || '',
-      sheetRow: entry.rowIndex || null
+      sheetRow: entry.rowIndex || null,
+      labels: rawLabels,
+      hasSnow: hasSnowLabel
     });
   });
   return sortChannels(Array.from(byMode.values()));
