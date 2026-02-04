@@ -35,6 +35,8 @@ export default function useEditorHotkeys(params) {
         undo,
         redo,
         cycleSegmentMode,
+        cycleSegmentChannelForId,
+        cycleSegmentChannelAtTime,
         cycleSeekStep,
         addSegmentFromDraft,
         addRect,
@@ -45,6 +47,9 @@ export default function useEditorHotkeys(params) {
         copyAttributes,
         pasteAttributes,
         deleteElement,
+        deleteSegment,
+        deleteSegmentAtTime,
+        activeSegmentId,
         showHud
       } = paramsRef.current;
 
@@ -138,8 +143,12 @@ export default function useEditorHotkeys(params) {
         const mode =
           activeSegmentMode || currentEdit.segmentMode || getSegmentModeForVideo(activeVideo) || 'digital';
         const normalizedActive = normalizeName(mode);
-        const currentMode = normalizeName(selected.channelMode);
-        const nextMode = currentMode === normalizedActive ? 'all' : mode;
+        const currentModeRaw = selected.channelMode;
+        const currentModes = Array.isArray(currentModeRaw)
+          ? currentModeRaw.map(entry => normalizeName(entry))
+          : [normalizeName(currentModeRaw)];
+        const hasActive = currentModes.includes(normalizedActive);
+        const nextMode = hasActive ? 'all' : [mode];
         updateElement(selected.id, { channelMode: nextMode });
         if (nextMode === 'all') {
           showHud("Канал: всі");
@@ -159,6 +168,17 @@ export default function useEditorHotkeys(params) {
       if (eventMatchesAction(e, hotkeys, 'toggleSnowSegment')) {
         e.preventDefault();
         toggleSegmentSnowAtTime?.();
+        return;
+      }
+      if (eventMatchesAction(e, hotkeys, 'cycleSegmentChannel')) {
+        e.preventDefault();
+        if (cycleSegmentChannelAtTime) {
+          cycleSegmentChannelAtTime();
+          return;
+        }
+        if (activeSegmentId) {
+          cycleSegmentChannelForId?.(activeSegmentId);
+        }
         return;
       }
 
@@ -205,6 +225,15 @@ export default function useEditorHotkeys(params) {
           deleteElement(currentEdit.selectedId);
           showHud("Елемент видалено");
         }
+        return;
+      }
+      if (eventMatchesAction(e, hotkeys, 'deleteSegment')) {
+        e.preventDefault();
+        if (deleteSegmentAtTime) {
+          deleteSegmentAtTime();
+          return;
+        }
+        if (activeSegmentId) deleteSegment(activeSegmentId);
         return;
       }
 

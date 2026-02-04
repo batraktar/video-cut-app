@@ -34,7 +34,10 @@ function PlayerTimeline({
   processingSrc,
   processedUrl,
   activeVideo,
-  visibleElements
+  visibleElements,
+  activeSegmentId,
+  onSelectSegment,
+  onCycleSegmentChannel
 }) {
   return (
     <>
@@ -165,8 +168,10 @@ function PlayerTimeline({
               return (
                 <div
                   key={`${group.meta.id}-${seg.id}`}
+                  data-seg-id={seg.id}
+                  data-seg-mode={group.meta.id}
                   className={`absolute top-7 h-3 rounded border ${group.meta.track} ${isActive ? 'cursor-grab' : 'pointer-events-none opacity-40'
-                    }`}
+                    } ${activeSegmentId === seg.id ? 'ring-2 ring-amber-300/80' : ''}`}
                   style={{
                     left: `${getPct(seg.start)}%`,
                     width: `${getPct(seg.end - seg.start)}%`,
@@ -181,19 +186,34 @@ function PlayerTimeline({
                   }}
                   onMouseDown={
                     isActive
-                      ? e => onDragStart(e, { type: 'segment', id: seg.id, action: 'move' })
+                      ? e => {
+                          onSelectSegment?.(seg.id);
+                          onDragStart(e, { type: 'segment', id: seg.id, action: 'move' });
+                        }
                       : undefined
                   }
+                  onClick={() => onSelectSegment?.(seg.id)}
+                  onContextMenu={e => {
+                    if (!isActive) return;
+                    e.preventDefault();
+                    onCycleSegmentChannel?.(seg.id);
+                  }}
                 >
                   {isActive && (
                     <>
                       <div
                         className={`absolute -left-1 top-1/2 -translate-y-1/2 w-2 h-2 border rounded-full cursor-ew-resize ${activeSegmentMeta.handle}`}
-                        onMouseDown={e => onDragStart(e, { type: 'segment', id: seg.id, action: 'resize-start' })}
+                        onMouseDown={e => {
+                          onSelectSegment?.(seg.id);
+                          onDragStart(e, { type: 'segment', id: seg.id, action: 'resize-start' });
+                        }}
                       />
                       <div
                         className={`absolute -right-1 top-1/2 -translate-y-1/2 w-2 h-2 border rounded-full cursor-ew-resize ${activeSegmentMeta.handle}`}
-                        onMouseDown={e => onDragStart(e, { type: 'segment', id: seg.id, action: 'resize-end' })}
+                        onMouseDown={e => {
+                          onSelectSegment?.(seg.id);
+                          onDragStart(e, { type: 'segment', id: seg.id, action: 'resize-end' });
+                        }}
                       />
                     </>
                   )}
@@ -202,7 +222,11 @@ function PlayerTimeline({
             })
           )}
           {visibleElements.map(el => {
-            const label = el.channelMode && el.channelMode !== 'all' ? el.channelMode : null;
+            const label = Array.isArray(el.channelMode)
+              ? el.channelMode.filter(Boolean).join(', ')
+              : el.channelMode && el.channelMode !== 'all'
+                ? el.channelMode
+                : null;
             return (
               <div
                 key={el.id}

@@ -4,7 +4,9 @@ import {
   getEntryOrder,
   getFileKey,
   mergeChannelLists,
-  normalizeName
+  mergeLabelTokens,
+  normalizeName,
+  parseLabelTokens
 } from '../../lib/editorUtils';
 import { buildEditFromSaved, getSavedEditForVideo } from './editRestore';
 
@@ -52,6 +54,10 @@ export default function usePlaylistActions({
         .map(item => item.entry);
       const channels = buildChannelsFromEntries(orderedEntries);
       const hasSnow = orderedEntries.some(entryHasSnow);
+      const labels = mergeLabelTokens(
+        [],
+        orderedEntries.flatMap(entry => parseLabelTokens(entry?.labels))
+      );
       const existingItem = existingByFileKey.get(fileKey);
       if (existingItem && (existingItem.file || existingItem.url)) {
         if (channels.length > 0) {
@@ -61,7 +67,8 @@ export default function usePlaylistActions({
             url: existingItem.url || URL.createObjectURL(file),
             channels: mergeChannelLists(existingItem.channels, channels),
             sheetHasBoth: existingItem.sheetHasBoth || sheetHasBoth,
-            hasSnow: existingItem.hasSnow || hasSnow
+            hasSnow: existingItem.hasSnow || hasSnow,
+            labels: mergeLabelTokens(existingItem.labels, labels)
           });
         }
         return;
@@ -87,7 +94,8 @@ export default function usePlaylistActions({
         sheetCameraType: '',
         sheetStatus: '',
         sheetHasBoth,
-        channels
+        channels,
+        labels
       };
       if (existingItem) {
         replacements.push({ ...baseItem, channels: mergeChannelLists(existingItem.channels, channels) });

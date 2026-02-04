@@ -2,11 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { STORAGE_KEYS } from '../lib/editorConstants';
 import { normalizeName, saveToStorage } from '../lib/editorUtils';
 
-export default function usePlaylist({ suffixPresets = [], getFileKeyCounts, isSnowVideo }) {
+export default function usePlaylist({
+  suffixPresets = [],
+  getFileKeyCounts,
+  isSnowVideo,
+  getVideoDuration,
+  isVideoEdited
+}) {
   const [playlist, setPlaylist] = useState([]);
   const [currentId, setCurrentId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeGroupKey, setActiveGroupKey] = useState('__none__');
+  const [activeLabelFilters, setActiveLabelFilters] = useState([]);
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
   const [playlistScrollTop, setPlaylistScrollTop] = useState(0);
@@ -33,23 +40,67 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts, isSn
     () => (getFileKeyCounts ? getFileKeyCounts(playlist) : new Map()),
     [playlist, getFileKeyCounts]
   );
-  const filteredPlaylist = useMemo(() => {
+  const searchFilteredPlaylist = useMemo(() => {
     const query = normalizeName(searchQuery);
     if (!query) return playlist;
     return playlist.filter(p => normalizeName(p.name).includes(query));
   }, [playlist, searchQuery]);
+  const labelOptions = useMemo(() => {
+    const map = new Map();
+    playlist.forEach(item => {
+      (item?.labels || []).forEach(label => {
+        const key = normalizeName(label);
+        if (!key) return;
+        const current = map.get(key) || { key, label, count: 0 };
+        current.count += 1;
+        if (!current.label || current.label.length < label.length) current.label = label;
+        map.set(key, current);
+      });
+    });
+    return Array.from(map.values()).sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      return a.label.localeCompare(b.label);
+    });
+  }, [playlist]);
+  const labelFilterSet = useMemo(
+    () => new Set(activeLabelFilters),
+    [activeLabelFilters]
+  );
+  const filteredPlaylist = useMemo(() => {
+    if (labelFilterSet.size === 0) return searchFilteredPlaylist;
+    return searchFilteredPlaylist.filter(item => {
+      const labels = Array.isArray(item.labels) ? item.labels : [];
+      return labels.some(label => labelFilterSet.has(normalizeName(label)));
+    });
+  }, [labelFilterSet, searchFilteredPlaylist]);
+  const sortedFilteredPlaylist = useMemo(() => {
+    if (!filteredPlaylist.length) return filteredPlaylist;
+    const withMeta = filteredPlaylist.map((item, index) => {
+      const duration = getVideoDuration ? getVideoDuration(item) : Number.POSITIVE_INFINITY;
+      const edited = isVideoEdited ? isVideoEdited(item) : false;
+      return { item, index, duration, edited };
+    });
+    withMeta.sort((a, b) => {
+      if (a.edited !== b.edited) return a.edited ? -1 : 1;
+      const aDuration = Number.isFinite(a.duration) ? a.duration : Number.POSITIVE_INFINITY;
+      const bDuration = Number.isFinite(b.duration) ? b.duration : Number.POSITIVE_INFINITY;
+      if (aDuration !== bDuration) return aDuration - bDuration;
+      return a.index - b.index;
+    });
+    return withMeta.map(entry => entry.item);
+  }, [filteredPlaylist, getVideoDuration, isVideoEdited]);
   const snowPlaylist = useMemo(() => {
     const predicate = typeof isSnowVideo === 'function' ? isSnowVideo : p => !!p?.hasSnow;
-    return filteredPlaylist.filter(predicate);
-  }, [filteredPlaylist, isSnowVideo]);
+    return sortedFilteredPlaylist.filter(predicate);
+  }, [sortedFilteredPlaylist, isSnowVideo]);
   const multiChannelPlaylist = useMemo(
-    () => filteredPlaylist.filter(p => (fileKeyCountsAll.get(p.fileKey) || 0) > 1),
-    [filteredPlaylist, fileKeyCountsAll]
+    () => sortedFilteredPlaylist.filter(p => (fileKeyCountsAll.get(p.fileKey) || 0) > 1),
+    [sortedFilteredPlaylist, fileKeyCountsAll]
   );
   const groupOrder = useMemo(() => ['__none__', ...suffixOptions], [suffixOptions]);
   const groupedPlaylist = useMemo(() => {
     const groups = new Map();
-    filteredPlaylist.forEach(item => {
+    sortedFilteredPlaylist.forEach(item => {
       const key = item.suffix ? item.suffix : '__none__';
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(item);
@@ -62,14 +113,14 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts, isSn
       if (idxB === -1) return -1;
       return idxA - idxB;
     });
-  }, [filteredPlaylist, groupOrder]);
+  }, [sortedFilteredPlaylist, groupOrder]);
   const activeGroupItems = useMemo(() => {
-    if (activeGroupKey === '__all__') return filteredPlaylist;
+    if (activeGroupKey === '__all__') return sortedFilteredPlaylist;
     if (activeGroupKey === '__multi__') return multiChannelPlaylist;
     if (activeGroupKey === '__snow__') return snowPlaylist;
     const entry = groupedPlaylist.find(([key]) => key === activeGroupKey);
     return entry ? entry[1] : [];
-  }, [groupedPlaylist, activeGroupKey, filteredPlaylist, multiChannelPlaylist, snowPlaylist]);
+  }, [groupedPlaylist, activeGroupKey, sortedFilteredPlaylist, multiChannelPlaylist, snowPlaylist]);
 
   useEffect(() => {
     if (groupedPlaylist.length === 0) return;
@@ -157,6 +208,16 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts, isSn
     setPlaylistScrollTop(e.currentTarget.scrollTop);
   };
 
+  const toggleLabelFilter = labelKey => {
+    if (!labelKey) return;
+    setActiveLabelFilters(prev => {
+      if (prev.includes(labelKey)) return prev.filter(item => item !== labelKey);
+      return [...prev, labelKey];
+    });
+  };
+
+  const clearLabelFilters = () => setActiveLabelFilters([]);
+
   useEffect(() => {
     playlistRef.current = playlist;
     const payload = playlist.map(v => ({
@@ -173,6 +234,7 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts, isSn
       sheetStatus: v.sheetStatus || '',
       notRelevant: !!v.notRelevant,
       hasSnow: !!v.hasSnow,
+      labels: Array.isArray(v.labels) ? v.labels : [],
       channels: Array.isArray(v.channels) ? v.channels : [],
       source: v.source || '',
       sourcePath: v.sourcePath || '',
@@ -202,6 +264,11 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts, isSn
     setSearchQuery,
     activeGroupKey,
     setActiveGroupKey,
+    labelOptions,
+    activeLabelFilters,
+    toggleLabelFilter,
+    clearLabelFilters,
+    setLabelFilters: setActiveLabelFilters,
     draggingId,
     setDraggingId,
     dragOverId,
@@ -209,12 +276,12 @@ export default function usePlaylist({ suffixPresets = [], getFileKeyCounts, isSn
     playlistRef,
     playlistScrollRef,
     searchInputRef,
-    filteredPlaylist,
+    filteredPlaylist: sortedFilteredPlaylist,
     groupedPlaylist,
     activeGroupItems,
     selectedCount,
     isAllSelected,
-    allCount: filteredPlaylist.length,
+    allCount: sortedFilteredPlaylist.length,
     multiCount: multiChannelPlaylist.length,
     snowCount: snowPlaylist.length,
     playlistVisibleItems,

@@ -16,9 +16,11 @@ import {
   getServerFileKey,
   getSheetCsvUrl,
   getSuffixForSegmentMode,
+  mergeLabelTokens,
   mergeChannelLists,
   normalizeName,
   normalizeSegmentSets,
+  parseLabelTokens,
   parseCsv,
   resolveSegmentModeFromMeta,
   resolveSegmentModeFromSuffix,
@@ -446,6 +448,7 @@ export default function useAdmin({
         sheetStatus: v.sheetStatus || '',
         notRelevant: !!v.notRelevant,
         hasSnow: !!v.hasSnow,
+        labels: Array.isArray(v.labels) ? v.labels : [],
         channels: Array.isArray(v.channels) ? v.channels : [],
         source: v.source || '',
         sourcePath: v.sourcePath || '',
@@ -509,6 +512,8 @@ export default function useAdmin({
             sheetCameraType: item.sheetCameraType || '',
             sheetStatus: item.sheetStatus || '',
             notRelevant: !!item.notRelevant,
+            hasSnow: !!item.hasSnow,
+            labels: Array.isArray(item.labels) ? item.labels : [],
             source: item.source || '',
             sourcePath: item.sourcePath || '',
             sourceBaseDir: item.sourceBaseDir || '',
@@ -1432,6 +1437,10 @@ export default function useAdmin({
 
       const channels = buildChannelsFromEntries(orderedEntries);
       const hasSnow = orderedEntries.some(entryHasSnow) || normalizeName(fileInfo.name).includes('snow');
+      const labels = mergeLabelTokens(
+        [],
+        orderedEntries.flatMap(entry => parseLabelTokens(entry?.labels))
+      );
 
       if (modes.length > 0 && !channels.some(channel => modes.includes(channel.mode))) {
         filteredOut += 1;
@@ -1450,15 +1459,18 @@ export default function useAdmin({
       if (existingItem) {
         const merged = mergeChannelLists(existingItem.channels, channels);
         const nextHasSnow = existingItem.hasSnow || hasSnow;
+        const nextLabels = mergeLabelTokens(existingItem.labels, labels);
         if (
           (merged.length > 0 && merged.length !== (existingItem.channels || []).length) ||
-          nextHasSnow !== existingItem.hasSnow
+          nextHasSnow !== existingItem.hasSnow ||
+          nextLabels.length !== (existingItem.labels || []).length
         ) {
           const updated = {
             ...existingItem,
             channels: merged,
             sheetHasBoth: existingItem.sheetHasBoth || sheetHasBoth,
-            hasSnow: nextHasSnow
+            hasSnow: nextHasSnow,
+            labels: nextLabels
           };
           existingByFileKey.set(fileKey, updated);
           mergedUpdates.push(updated);
@@ -1488,6 +1500,7 @@ export default function useAdmin({
         sheetStatus: '',
         sheetHasBoth,
         channels,
+        labels,
         source: 'server',
         sourcePath: fileInfo.relativePath,
         sourceBaseDir: baseDir

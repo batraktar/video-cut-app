@@ -18,6 +18,7 @@ import {
   getTimeForSegmentOffset,
   loadFromStorage,
   mergeChannelLists,
+  mergeLabelTokens,
   normalizeName,
   normalizeSegmentSets,
   parseNumericInput,
@@ -63,6 +64,40 @@ export default function App() {
     const flat = edit?.segments;
     return Array.isArray(flat) && flat.some(seg => !!seg?.isSnow);
   }, [edits]);
+  const isVideoEdited = useCallback(edit => {
+    if (!edit) return false;
+    const hasElements = Array.isArray(edit.elements) && edit.elements.length > 0;
+    const hasCrop = edit.crop && (edit.crop.t || edit.crop.b || edit.crop.l || edit.crop.r);
+    const hasTrim =
+      edit.meta?.duration > 0 &&
+      (edit.trim?.start > 0.01 ||
+        Math.abs((edit.trim?.end || edit.meta.duration) - edit.meta.duration) > 0.01);
+    const segmentSets = normalizeSegmentSets(edit.segmentSets, edit.segments, edit.segmentMode || 'digital');
+    const hasSegments = Object.values(segmentSets).some(list => list.length > 0);
+    return hasElements || hasCrop || hasTrim || hasSegments;
+  }, []);
+  const [durationCache, setDurationCache] = useState(() =>
+    loadFromStorage(STORAGE_KEYS.durations, {})
+  );
+  const getDurationKey = useCallback(video => {
+    if (!video) return '';
+    return video.fileKey || video.id || video.name || '';
+  }, []);
+  const getVideoDuration = useCallback(
+    video => {
+      const edit = edits?.[video?.id];
+      const duration = edit?.meta?.duration;
+      if (Number.isFinite(duration) && duration > 0) return duration;
+      const key = getDurationKey(video);
+      const cached = key ? durationCache[key] : null;
+      return Number.isFinite(cached) ? cached : Number.POSITIVE_INFINITY;
+    },
+    [edits, durationCache, getDurationKey]
+  );
+  const isVideoEditedForVideo = useCallback(
+    video => isVideoEdited(edits?.[video?.id]),
+    [edits, isVideoEdited]
+  );
   const [hotkeys, setHotkeys] = useState(() =>
     normalizeHotkeys(loadFromStorage(STORAGE_KEYS.hotkeys, null))
   );
@@ -83,6 +118,7 @@ export default function App() {
   const [overwriteOutputs, setOverwriteOutputs] = useState(false);
   const [serverHydrationState, setServerHydrationState] = useState('pending');
   const [importPickerRequest, setImportPickerRequest] = useState(0);
+  const [importPickerHandled, setImportPickerHandled] = useState(0);
   const [autoSyncAllowed, setAutoSyncAllowed] = useState(false);
   const hotkeyCaptureRef = useRef(false);
   const serverHydratedRef = useRef(false);
@@ -96,6 +132,11 @@ export default function App() {
     setSearchQuery,
     activeGroupKey,
     setActiveGroupKey,
+    labelOptions,
+    activeLabelFilters,
+    toggleLabelFilter,
+    clearLabelFilters,
+    setLabelFilters,
     draggingId,
     setDraggingId,
     dragOverId,
@@ -121,7 +162,13 @@ export default function App() {
     selectVisible,
     reorderPlaylist,
     handlePlaylistScroll
-  } = usePlaylist({ suffixPresets: SUFFIX_PRESETS, getFileKeyCounts, isSnowVideo });
+  } = usePlaylist({
+    suffixPresets: SUFFIX_PRESETS,
+    getFileKeyCounts,
+    isSnowVideo,
+    getVideoDuration,
+    isVideoEdited: isVideoEditedForVideo
+  });
   const [isCanvasExpanded, setIsCanvasExpanded] = useState(false);
   const [focusCanvasHeight, setFocusCanvasHeight] = useState(() => {
     if (typeof window === 'undefined') return 600;
@@ -168,6 +215,8 @@ export default function App() {
   const copiedNameTimeoutRef = useRef(null);
   const spacePanRef = useRef(false);
   const viewportHoverRef = useRef(false);
+  const lastTimeUiUpdateRef = useRef(0);
+  const lastSegmentDragUpdateRef = useRef(0);
 
   // Dragging state
   const isDragging = useRef(false);
@@ -186,6 +235,7 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [segmentDraft, setSegmentDraft] = useState({ start: null, end: null });
+  const [activeSegmentId, setActiveSegmentId] = useState(null);
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
   const autoSaveEnabledRef = useRef(true);
   useEffect(() => {
@@ -214,8 +264,10 @@ export default function App() {
     if (!Array.isArray(items) || items.length === 0) return null;
     const primary = items.find(item => item?.file || item?.url) || items[0];
     let channels = Array.isArray(primary.channels) ? primary.channels : [];
+    let labels = Array.isArray(primary.labels) ? primary.labels : [];
     items.forEach(item => {
       channels = mergeChannelLists(channels, item?.channels);
+      labels = mergeLabelTokens(labels, item?.labels);
     });
     const pick = (value, fallback) =>
       value !== undefined && value !== null && value !== '' ? value : fallback;
@@ -235,6 +287,8 @@ export default function App() {
       ),
       sheetStatus: pick(primary.sheetStatus, items.find(item => item?.sheetStatus)?.sheetStatus || ''),
       notRelevant: items.some(item => item?.notRelevant),
+      hasSnow: items.some(item => item?.hasSnow),
+      labels,
       checked: items.some(item => item?.checked),
       isLoading: items.some(item => item?.isLoading),
       source: pick(primary.source, items.find(item => item?.source)?.source || ''),
@@ -1171,6 +1225,9 @@ export default function App() {
     saveToStorage(STORAGE_KEYS.hotkeys, hotkeys);
   }, [hotkeys]);
   useEffect(() => {
+    saveToStorage(STORAGE_KEYS.durations, durationCache);
+  }, [durationCache]);
+  useEffect(() => {
     if (!isFocusMode) setFocusSideOpen(false);
   }, [isFocusMode]);
 
@@ -1249,6 +1306,44 @@ export default function App() {
   const activeSegments = useMemo(
     () => getSegmentsForMode(currentEdit, activeSegmentMode),
     [currentEdit.segmentSets, currentEdit.segments, activeSegmentMode]
+  );
+  const cycleSegmentChannelForId = useCallback(
+    segmentId => {
+      if (!segmentId) return;
+      const currentMode = activeSegmentMode || getSegmentModeForVideo(activeVideo) || 'digital';
+      const available = Array.isArray(activeSegmentModes) && activeSegmentModes.length > 0
+        ? activeSegmentModes
+        : SEGMENT_MODES.map(mode => mode.id);
+      const currentIndex = available.indexOf(currentMode);
+      if (currentIndex === -1 || available.length <= 1) return;
+      const nextMode = available[(currentIndex + 1) % available.length];
+      if (!nextMode || nextMode === currentMode) return;
+      const baseSets = normalizeSegmentSets(
+        currentEdit.segmentSets,
+        currentEdit.segments,
+        currentMode
+      );
+      const currentSegments = baseSets[currentMode] || [];
+      const seg = currentSegments.find(item => item.id === segmentId);
+      if (!seg) return;
+      const nextCurrent = currentSegments.filter(item => item.id !== segmentId);
+      const targetSegments = baseSets[nextMode] || [];
+      const nextTarget = [...targetSegments, { ...seg }].sort((a, b) => a.start - b.start);
+      const nextSets = {
+        ...baseSets,
+        [currentMode]: nextCurrent,
+        [nextMode]: nextTarget
+      };
+      const nextState = {
+        segmentSets: nextSets
+      };
+      if (currentEdit.segmentMode === currentMode) nextState.segments = nextCurrent;
+      if (currentEdit.segmentMode === nextMode) nextState.segments = nextTarget;
+      updateCurrentEdit(nextState, true);
+      setActiveSegmentId(segmentId);
+      showHud(`Сегмент → ${SEGMENT_MODES.find(item => item.id === nextMode)?.label || nextMode}`);
+    },
+    [activeSegmentMode, activeSegmentModes, activeVideo, currentEdit, updateCurrentEdit]
   );
   const visibleElements = useMemo(
     () => filterElementsForMode(currentEdit.elements, activeSegmentMode),
@@ -1413,6 +1508,15 @@ export default function App() {
       },
       false
     );
+    if (duration > 0) {
+      const cacheKey = getDurationKey(activeVideo);
+      if (cacheKey) {
+        setDurationCache(prev => {
+          if (prev?.[cacheKey] === duration) return prev;
+          return { ...prev, [cacheKey]: duration };
+        });
+      }
+    }
   };
 
   const togglePlayback = () => {
@@ -1502,7 +1606,11 @@ export default function App() {
       if (timeUpdateRafRef.current) return;
       timeUpdateRafRef.current = requestAnimationFrame(() => {
         timeUpdateRafRef.current = null;
-        setCurrentTime(lastTimeUpdateRef.current);
+        const now = performance.now();
+        if (now - lastTimeUiUpdateRef.current >= 33) {
+          lastTimeUiUpdateRef.current = now;
+          setCurrentTime(lastTimeUpdateRef.current);
+        }
         if (playSegmentsOnlyRef.current && isPlayingRef.current) handleSegmentPlayback(vid);
       });
     };
@@ -1684,41 +1792,36 @@ export default function App() {
     });
     showHud(target.isSnow ? "Snow знято" : "Snow додано");
   }, [activeSegmentMode, activeVideo, currentEdit, getSegmentModeForVideo, showHud, updateCurrentEdit]);
-
-  useEditorHotkeys({
-    hotkeys,
-    hotkeyCaptureRef,
-    altDownRef,
-    altUsedWithOtherRef,
-    spacePanRef,
-    viewportHoverRef,
-    searchInputRef,
-    videoRef,
-    activeVideo,
-    isProcessing,
-    processingJob,
-    currentId,
-    currentEdit,
-    activeSegmentMode,
-    seekStep,
-    setCurrentTime,
-    setIsFocusMode,
-    setFocusSideOpen,
-    undo,
-    redo,
-    cycleSegmentMode,
-    cycleSeekStep,
-    addSegmentFromDraft,
-    addRect,
-    updateElement,
-    setSegmentDraft,
-    toggleSegmentSnowAtTime,
-    togglePlayback,
-    copyAttributes,
-    pasteAttributes,
-    deleteElement,
-    showHud
-  });
+  const findSegmentAtTime = useCallback(() => {
+    const mode = currentEdit.segmentMode || getSegmentModeForVideo(activeVideo) || 'digital';
+    const segments = getSegmentsForMode(currentEdit, mode);
+    if (!segments.length) return { mode, target: null, segments };
+    const t = videoRef.current?.currentTime ?? currentTime;
+    const target = segments.find(seg => t >= seg.start && t <= seg.end) || null;
+    return { mode, target, segments };
+  }, [activeVideo, currentEdit, currentTime, getSegmentModeForVideo]);
+  const cycleSegmentChannelAtTime = useCallback(() => {
+    const { mode: currentMode, target } = findSegmentAtTime();
+    if (!target) {
+      showHud("Немає сегмента під курсором");
+      return;
+    }
+    cycleSegmentChannelForId(target.id);
+  }, [findSegmentAtTime, cycleSegmentChannelForId, showHud]);
+  const deleteSegmentAtTime = useCallback(() => {
+    const { mode, target, segments } = findSegmentAtTime();
+    if (!target) {
+      showHud("Немає сегмента під курсором");
+      return;
+    }
+    const nextSegments = segments.filter(seg => seg.id !== target.id);
+    updateCurrentEdit({
+      segmentSets: updateSegmentsForMode(currentEdit, mode, nextSegments),
+      segments: nextSegments
+    });
+    setActiveSegmentId(null);
+    showHud("Сегмент видалено");
+  }, [findSegmentAtTime, currentEdit, showHud, updateCurrentEdit]);
 
   const normalizeSegment = (seg, duration) => {
     if (!duration) return seg;
@@ -1755,14 +1858,53 @@ export default function App() {
     updateSegmentRef.current = updateSegment;
   }, [updateSegment]);
 
-  const removeSegment = id => {
+  function removeSegment(id) {
     const mode = getActiveSegmentMode();
     const nextSegments = getSegmentsForMode(currentEdit, mode).filter(seg => seg.id !== id);
     updateCurrentEdit({
       segmentSets: updateSegmentsForMode(currentEdit, mode, nextSegments),
       segments: nextSegments
     });
-  };
+  }
+  useEditorHotkeys({
+    hotkeys,
+    hotkeyCaptureRef,
+    altDownRef,
+    altUsedWithOtherRef,
+    spacePanRef,
+    viewportHoverRef,
+    searchInputRef,
+    videoRef,
+    activeVideo,
+    isProcessing,
+    processingJob,
+    currentId,
+    currentEdit,
+    activeSegmentMode,
+    seekStep,
+    setCurrentTime,
+    setIsFocusMode,
+    setFocusSideOpen,
+    undo,
+    redo,
+    cycleSegmentMode,
+    cycleSegmentChannelForId,
+    cycleSegmentChannelAtTime,
+    cycleSeekStep,
+    addSegmentFromDraft,
+    addRect,
+    updateElement,
+    setSegmentDraft,
+    toggleSegmentSnowAtTime,
+    togglePlayback,
+    copyAttributes,
+    pasteAttributes,
+    deleteElement,
+    deleteSegment: removeSegment,
+    deleteSegmentAtTime,
+    activeSegmentId,
+    showHud
+  });
 
   const moveSegment = (id, direction) => {
     const mode = getActiveSegmentMode();
@@ -1917,12 +2059,26 @@ export default function App() {
 
         if (target.type === 'segment') {
           if (!timelineRef.current || !edit.meta.duration) return;
+          const nowSeg = performance.now();
+          if (nowSeg - lastSegmentDragUpdateRef.current < 33) return;
+          lastSegmentDragUpdateRef.current = nowSeg;
           const rect = timelineRef.current.getBoundingClientRect();
           const deltaTime =
             ((clientX - startPos.current.x) / rect.width) * edit.meta.duration;
           const segStart = startState.current.start;
           const segEnd = startState.current.end;
           const segLen = segEnd - segStart;
+          const applySegmentPreview = nextSeg => {
+            const duration = edit.meta.duration;
+            if (!duration) return;
+            const left = (nextSeg.start / duration) * 100;
+            const width = ((nextSeg.end - nextSeg.start) / duration) * 100;
+            const selector = `[data-seg-id="${target.id}"][data-seg-mode="${target.mode}"]`;
+            const el = timelineRef.current?.querySelector(selector);
+            if (!el) return;
+            el.style.left = `${left}%`;
+            el.style.width = `${width}%`;
+          };
 
           if (target.action === 'move') {
             let newStart = segStart + deltaTime;
@@ -1930,17 +2086,17 @@ export default function App() {
             const newEnd = newStart + segLen;
             const nextSeg = { start: newStart, end: newEnd };
             segmentPreviewRef.current.set(target.id, nextSeg);
-            updateSegmentRef.current?.(target.id, nextSeg, false);
+            applySegmentPreview(nextSeg);
           } else if (target.action === 'resize-start') {
             const newStart = clamp(segStart + deltaTime, 0, segEnd - 0.1);
             const nextSeg = { start: newStart, end: segEnd };
             segmentPreviewRef.current.set(target.id, nextSeg);
-            updateSegmentRef.current?.(target.id, nextSeg, false);
+            applySegmentPreview(nextSeg);
           } else if (target.action === 'resize-end') {
             const newEnd = clamp(segEnd + deltaTime, segStart + 0.1, edit.meta.duration);
             const nextSeg = { start: segStart, end: newEnd };
             segmentPreviewRef.current.set(target.id, nextSeg);
-            updateSegmentRef.current?.(target.id, nextSeg, false);
+            applySegmentPreview(nextSeg);
           }
           return;
         }
@@ -2049,9 +2205,8 @@ export default function App() {
         elementPreviewRef.current.delete(target.id);
       } else if (target?.type === 'segment') {
         const latest = segmentPreviewRef.current.get(target.id);
-        if (latest) {
-          updateSegment(target.id, latest, true);
-        }
+        if (latest) updateSegment(target.id, latest, true);
+        setActiveSegmentId(target.id);
         segmentPreviewRef.current.delete(target.id);
       } else if (target?.type === 'trim-start' || target?.type === 'trim-end') {
         if (trimPreviewRef.current) {
@@ -2095,6 +2250,7 @@ export default function App() {
     if (autoSaveEnabledRef.current) setAutoSaveEnabled(false);
     isDragging.current = true;
     dragTarget.current = targetInfo;
+    if (targetInfo?.type === 'segment') setActiveSegmentId(targetInfo.id);
     startPos.current = { x: e.clientX, y: e.clientY };
     if (targetInfo.type === 'element') {
       const el = currentEdit.elements.find(e => e.id === targetInfo.id);
@@ -2105,6 +2261,7 @@ export default function App() {
       const mode = getActiveSegmentMode();
       const seg = getSegmentsForMode(currentEdit, mode).find(s => s.id === targetInfo.id);
       if (seg) startState.current = { start: seg.start, end: seg.end };
+      dragTarget.current.mode = mode;
       segmentPreviewRef.current.delete(targetInfo.id);
     } else if (targetInfo.type === 'crop') {
       startState.current = { ...currentEdit.crop };
@@ -2147,18 +2304,6 @@ export default function App() {
   };
 
   const selectedElement = currentEdit.elements.find(e => e.id === currentEdit.selectedId);
-  const isVideoEdited = edit => {
-    if (!edit) return false;
-    const hasElements = Array.isArray(edit.elements) && edit.elements.length > 0;
-    const hasCrop = edit.crop && (edit.crop.t || edit.crop.b || edit.crop.l || edit.crop.r);
-    const hasTrim =
-      edit.meta?.duration > 0 &&
-      (edit.trim?.start > 0.01 ||
-        Math.abs((edit.trim?.end || edit.meta.duration) - edit.meta.duration) > 0.01);
-    const segmentSets = normalizeSegmentSets(edit.segmentSets, edit.segments, edit.segmentMode || 'digital');
-    const hasSegments = Object.values(segmentSets).some(list => list.length > 0);
-    return hasElements || hasCrop || hasTrim || hasSegments;
-  };
   const zoomToPoint = (nextZoom, clientX, clientY) => {
     const clampedZoom = clamp(nextZoom, 0.5, 5);
     const viewport = viewportRef.current;
@@ -2250,6 +2395,10 @@ export default function App() {
     searchQuery,
     onSearchChange: setSearchQuery,
     searchInputRef,
+    labelOptions,
+    activeLabelFilters,
+    onLabelFiltersChange: setLabelFilters,
+    onClearLabelFilters: clearLabelFilters,
     onToggleSelectAll: toggleSelectAll,
     onClearSelection: clearSelection,
     onSelectVisible: selectVisible,
@@ -2385,6 +2534,9 @@ export default function App() {
     updateSegment,
     moveSegment,
     removeSegment,
+    activeSegmentId,
+    setActiveSegmentId,
+    onCycleSegmentChannel: cycleSegmentChannelForId,
     selectedElement,
     duplicateElement,
 	    copyAttributes,
@@ -2448,9 +2600,11 @@ export default function App() {
     adminShowSnapshot={adminShowSnapshot}
     adminLogoLoading={adminLogoLoading}
     adminLogoStats={adminLogoStats}
-    adminSyncState={adminSyncState}
-    importPickerRequest={importPickerRequest}
-    autoSyncAllowed={autoSyncAllowed}
+        adminSyncState={adminSyncState}
+        importPickerRequest={importPickerRequest}
+        importPickerHandled={importPickerHandled}
+        onImportPickerHandled={setImportPickerHandled}
+        autoSyncAllowed={autoSyncAllowed}
     selectedCount={selectedCount}
         activeVideo={activeVideo}
         getJobMeta={getJobMeta}

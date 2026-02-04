@@ -1,4 +1,5 @@
 import React, { memo } from 'react';
+import { Select } from 'antd';
 import { CheckSquare, Film, Plus, Snowflake, Square as SquareIcon, Trash2 } from 'lucide-react';
 
 function SidebarPlaylist({
@@ -19,6 +20,10 @@ function SidebarPlaylist({
   searchQuery,
   onSearchChange,
   searchInputRef,
+  labelOptions,
+  activeLabelFilters,
+  onLabelFiltersChange,
+  onClearLabelFilters,
   onToggleSelectAll,
   onClearSelection,
   onSelectVisible,
@@ -60,7 +65,6 @@ function SidebarPlaylist({
     const flat = edit?.segments;
     return Array.isArray(flat) && flat.some(seg => !!seg?.isSnow);
   };
-
   return (
     <>
       {isFocusMode && focusSideOpen && (
@@ -208,6 +212,39 @@ function SidebarPlaylist({
                     </button>
                   );
                 })}
+              </div>
+            )}
+            {labelOptions.length > 0 && (
+              <div className="mt-3">
+                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                  <span>Labels</span>
+                  {activeLabelFilters.length > 0 && (
+                    <button
+                      onClick={onClearLabelFilters}
+                      className="text-[10px] text-slate-400 hover:text-slate-600"
+                    >
+                      Очистити
+                    </button>
+                  )}
+                </div>
+                <div className="mt-2">
+                  <Select
+                    mode="multiple"
+                    showSearch
+                    allowClear
+                    value={activeLabelFilters}
+                    onChange={onLabelFiltersChange}
+                    optionFilterProp="label"
+                    className={`w-full text-xs ${isDark ? 'text-white' : ''}`}
+                    dropdownClassName={isDark ? 'bg-slate-800 text-slate-100' : ''}
+                    style={{ width: '100%' }}
+                    placeholder="Оберіть labels"
+                    options={labelOptions.map(option => ({
+                      label: `${option.label} (${option.count})`,
+                      value: option.key
+                    }))}
+                  />
+                </div>
               </div>
             )}
           </div>

@@ -57,9 +57,39 @@ export const parseNumericInput = value => {
 
 export const normalizeName = value => String(value || '').trim().toLowerCase();
 
+export const parseLabelTokens = value => {
+  if (!value) return [];
+  return String(value)
+    .replace(/[;,]+/g, ' ')
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(Boolean);
+};
+
+export const mergeLabelTokens = (base, incoming) => {
+  const map = new Map();
+  (base || []).forEach(label => {
+    const key = normalizeName(label);
+    if (key && !map.has(key)) map.set(key, label);
+  });
+  (incoming || []).forEach(label => {
+    const key = normalizeName(label);
+    if (key && !map.has(key)) map.set(key, label);
+  });
+  return Array.from(map.values());
+};
+
 export const isElementForMode = (element, mode) => {
   if (!element) return false;
-  const target = normalizeName(element.channelMode);
+  const channelMode = element.channelMode;
+  if (Array.isArray(channelMode)) {
+    if (channelMode.length === 0) return true;
+    const normalizedModes = channelMode.map(entry => normalizeName(entry));
+    if (normalizedModes.includes('all')) return true;
+    const desired = normalizeName(mode);
+    return desired ? normalizedModes.includes(desired) : false;
+  }
+  const target = normalizeName(channelMode);
   if (!target || target === 'all') return true;
   const desired = normalizeName(mode);
   if (!desired) return false;

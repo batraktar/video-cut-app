@@ -14,6 +14,7 @@ import {
   X,
   Trash2
 } from 'lucide-react';
+import { Select } from 'antd';
 import { SEGMENT_MODES } from '../lib/editorConstants';
 import HotkeysSettings from './HotkeysSettings';
 import SnowSettings from './SnowSettings';
@@ -42,6 +43,9 @@ function PropertiesPanel({
   updateSegment,
   moveSegment,
   removeSegment,
+  activeSegmentId,
+  setActiveSegmentId,
+  onCycleSegmentChannel,
   selectedElement,
   duplicateElement,
   copyAttributes,
@@ -207,7 +211,15 @@ function PropertiesPanel({
             <div className="text-[10px] text-slate-400">Немає сегментів для експорту</div>
           )}
           {activeSegments.map((seg, idx) => (
-            <div key={seg.id} className="flex items-center gap-2 text-[10px]">
+            <div
+              key={seg.id}
+              className={`flex items-center gap-2 text-[10px] rounded px-1 ${activeSegmentId === seg.id ? 'ring-1 ring-amber-300/70' : ''}`}
+              onClick={() => setActiveSegmentId?.(seg.id)}
+              onContextMenu={e => {
+                e.preventDefault();
+                onCycleSegmentChannel?.(seg.id);
+              }}
+            >
               <div className="text-slate-400 w-7 text-right">{idx + 1}</div>
               <input
                 type="number"
@@ -218,6 +230,7 @@ function PropertiesPanel({
                   if (!Number.isFinite(next)) return;
                   updateSegment(seg.id, { start: next });
                 }}
+                onFocus={() => setActiveSegmentId?.(seg.id)}
                 className={`w-16 p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'
                   }`}
               />
@@ -230,6 +243,7 @@ function PropertiesPanel({
                   if (!Number.isFinite(next)) return;
                   updateSegment(seg.id, { end: next });
                 }}
+                onFocus={() => setActiveSegmentId?.(seg.id)}
                 className={`w-16 p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'
                   }`}
               />
@@ -420,18 +434,38 @@ function PropertiesPanel({
           )}
           <div className="space-y-2 pt-2 border-t">
             <label className="text-xs font-bold opacity-70 block">Канал</label>
-            <select
-              value={selectedElement.channelMode || 'all'}
-              onChange={e => updateElement(selectedElement.id, { channelMode: e.target.value })}
-              className={`w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'}`}
-            >
-              <option value="all">Всі</option>
-              {SEGMENT_MODES.map(mode => (
-                <option key={mode.id} value={mode.id}>
-                  {mode.label}
-                </option>
-              ))}
-            </select>
+            <Select
+              mode="multiple"
+              showSearch
+              allowClear
+              value={
+                Array.isArray(selectedElement.channelMode)
+                  ? selectedElement.channelMode
+                  : selectedElement.channelMode
+                    ? [selectedElement.channelMode]
+                    : ['all']
+              }
+              onChange={values => {
+                if (!values || values.length === 0) {
+                  updateElement(selectedElement.id, { channelMode: 'all' });
+                  return;
+                }
+                if (values.includes('all')) {
+                  updateElement(selectedElement.id, { channelMode: 'all' });
+                  return;
+                }
+                updateElement(selectedElement.id, { channelMode: values });
+              }}
+              optionFilterProp="label"
+              className={`w-full text-xs ${isDark ? 'text-white' : ''}`}
+              dropdownClassName={isDark ? 'bg-slate-800 text-slate-100' : ''}
+              style={{ width: '100%' }}
+              placeholder="Оберіть канали"
+              options={[
+                { label: 'Всі', value: 'all' },
+                ...SEGMENT_MODES.map(mode => ({ label: mode.label, value: mode.id }))
+              ]}
+            />
           </div>
           <div className="space-y-2 pt-2 border-t">
             <label className="text-xs font-bold opacity-70 block">Вирівнювання</label>

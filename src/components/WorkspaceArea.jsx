@@ -66,6 +66,9 @@ export default function WorkspaceArea({
   updateSegment,
   moveSegment,
   removeSegment,
+  activeSegmentId,
+  setActiveSegmentId,
+  onCycleSegmentChannel,
   selectedElement,
   duplicateElement,
   copyAttributes,
@@ -145,6 +148,9 @@ export default function WorkspaceArea({
           processedUrl={processedUrl}
           activeVideo={activeVideo}
           visibleElements={visibleElements}
+          activeSegmentId={activeSegmentId}
+          onSelectSegment={setActiveSegmentId}
+          onCycleSegmentChannel={onCycleSegmentChannel}
         />
       </div>
 
@@ -173,6 +179,9 @@ export default function WorkspaceArea({
           updateSegment={updateSegment}
           moveSegment={moveSegment}
           removeSegment={removeSegment}
+          activeSegmentId={activeSegmentId}
+          setActiveSegmentId={setActiveSegmentId}
+          onCycleSegmentChannel={onCycleSegmentChannel}
           selectedElement={selectedElement}
           duplicateElement={duplicateElement}
           copyAttributes={copyAttributes}

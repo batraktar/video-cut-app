@@ -47,6 +47,7 @@ export const STORAGE_KEYS = {
   edits: 'videoCut.edits.v1',
   prefs: 'videoCut.prefs.v1',
   playlist: 'videoCut.playlist.v1',
+  durations: 'videoCut.durations.v1',
   hotkeys: 'videoCut.hotkeys.v1'
 };
 

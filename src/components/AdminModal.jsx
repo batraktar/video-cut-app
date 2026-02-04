@@ -29,6 +29,8 @@ export default function AdminModal({
   adminLogoStats,
   adminSyncState,
   importPickerRequest,
+  importPickerHandled,
+  onImportPickerHandled,
   autoSyncAllowed,
   selectedCount,
   activeVideo,
@@ -60,11 +62,10 @@ export default function AdminModal({
   if (!open) return null;
   const overlayRef = useRef(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [selectedModes, setSelectedModes] = useState(() => new Set());
+  const [selectedModes, setSelectedModes] = useState([]);
   const [snowFilter, setSnowFilter] = useState('any');
   const [onlySheet, setOnlySheet] = useState(true);
   const [pickerError, setPickerError] = useState('');
-  const lastPickerRequestRef = useRef(0);
 
   useEffect(() => {
     const handleKey = e => {
@@ -75,30 +76,27 @@ export default function AdminModal({
   }, [onClose]);
 
   useEffect(() => {
+    if (!open) return;
     if (!importPickerRequest) return;
-    if (importPickerRequest === lastPickerRequestRef.current) return;
-    lastPickerRequestRef.current = importPickerRequest;
+    if (importPickerRequest <= importPickerHandled) return;
     onLoadSheet?.();
     setPickerOpen(true);
-  }, [importPickerRequest, onLoadSheet]);
+    onImportPickerHandled?.(importPickerRequest);
+  }, [open, importPickerRequest, importPickerHandled, onLoadSheet, onImportPickerHandled]);
 
   const handleOverlayMouseDown = e => {
     if (e.target === overlayRef.current) onClose();
-  };
-
-  const handleToggleMode = mode => {
-    setSelectedModes(prev => {
-      const next = new Set(prev);
-      if (next.has(mode)) next.delete(mode);
-      else next.add(mode);
-      return next;
-    });
   };
 
   const handleOpenPicker = () => {
     onLoadSheet?.();
     setPickerError('');
     setPickerOpen(true);
+  };
+  const toggleMode = modeId => {
+    setSelectedModes(prev =>
+      prev.includes(modeId) ? prev.filter(item => item !== modeId) : [...prev, modeId]
+    );
   };
 
   const handleApplyPicker = async () => {
@@ -109,8 +107,7 @@ export default function AdminModal({
     if (onSaveConfig) {
       await onSaveConfig();
     }
-    const modes = Array.from(selectedModes);
-    onAddVideos({ modes, snow: snowFilter, onlySheet });
+    onAddVideos({ modes: selectedModes, snow: snowFilter, onlySheet });
     setPickerOpen(false);
   };
 
@@ -182,7 +179,7 @@ export default function AdminModal({
       className="fixed inset-0 z-[9997] flex items-center justify-center bg-black/50"
       onMouseDown={handleOverlayMouseDown}
     >
-      <div className={`w-full max-w-5xl rounded-2xl p-5 shadow-2xl ${isDark ? 'bg-slate-900 text-slate-100' : 'bg-white text-slate-800'}`}>
+      <div className={`w-full max-w-5xl rounded-2xl p-5 shadow-2xl max-h-[85vh] overflow-y-auto ${isDark ? 'bg-slate-900 text-slate-100' : 'bg-white text-slate-800'}`}>
         <div className="flex items-start justify-between mb-4">
           <div>
             <div className="text-base font-bold">Адмінка</div>
@@ -310,23 +307,32 @@ export default function AdminModal({
                 <div className="mt-2 text-[10px] text-rose-400">{pickerError}</div>
               )}
               <div className="mt-3">
-                <div className="text-xs font-bold mb-2">Канали</div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-bold mb-2">Канали</div>
+                  {selectedModes.length > 0 && (
+                    <button
+                      onClick={() => setSelectedModes([])}
+                      className="text-[10px] text-slate-400 hover:text-slate-600"
+                    >
+                      Очистити
+                    </button>
+                  )}
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {SEGMENT_MODES.map(mode => {
-                    const active = selectedModes.has(mode.id);
+                    const isActive = selectedModes.includes(mode.id);
                     return (
                       <button
                         key={mode.id}
-                        onClick={() => handleToggleMode(mode.id)}
-                        className={`px-2 py-1 rounded-full border text-[10px] font-bold transition ${active
-                          ? isDark
-                            ? 'bg-indigo-600 border-indigo-500 text-white'
-                            : 'bg-indigo-600 border-indigo-500 text-white'
+                        onClick={() => toggleMode(mode.id)}
+                        className={`px-2 py-1 rounded-full border text-[10px] font-bold transition ${isActive
+                          ? mode.active
                           : isDark
                             ? 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'
                             : 'bg-white border-slate-200 text-slate-500 hover:border-slate-400'
                           }`}
                       >
+                        <span className={`inline-block w-2 h-2 rounded-full mr-1 ${mode.dot}`} />
                         {mode.label}
                       </button>
                     );

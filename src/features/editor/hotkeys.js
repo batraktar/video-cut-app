@@ -21,6 +21,11 @@ export const DEFAULT_HOTKEYS = {
   toggleElementChannel: [{ code: 'KeyL', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   addSegment: [{ code: 'Enter', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   toggleSnowSegment: [{ code: 'KeyS', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
+  cycleSegmentChannel: [{ code: 'KeyC', ctrlKey: false, shiftKey: true, altKey: false, metaKey: false }],
+  deleteSegment: [
+    { code: 'Delete', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false },
+    { code: 'Backspace', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }
+  ],
   outline: [
     { code: 'KeyB', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false },
     { code: 'Comma', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }
@@ -56,6 +61,8 @@ export const HOTKEY_DEFS = [
   { id: 'markEnd', label: 'Поставити кінець (елемент/сегмент)' },
   { id: 'addSegment', label: 'Додати сегмент з чернетки' },
   { id: 'toggleSnowSegment', label: 'Snow: перемкнути сегмент під курсором' },
+  { id: 'cycleSegmentChannel', label: 'Сегмент: змінити канал' },
+  { id: 'deleteSegment', label: 'Сегмент: видалити' },
   { id: 'cycleSegmentMode', label: 'Перемкнути канал сегментів' },
   { id: 'addRect', label: 'Додати прямокутник' },
   { id: 'toggleElementChannel', label: 'Канал елемента: all/active' },

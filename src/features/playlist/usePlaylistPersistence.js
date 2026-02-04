@@ -237,6 +237,7 @@ export default function usePlaylistPersistence({
           sheetStatus: item.sheetStatus || '',
           notRelevant: !!item.notRelevant,
           hasSnow: !!item.hasSnow,
+          labels: Array.isArray(item.labels) ? item.labels : [],
           source: item.source || '',
           sourcePath: item.sourcePath || '',
           sourceBaseDir: item.sourceBaseDir || '',
