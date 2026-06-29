@@ -2636,7 +2636,10 @@ export default function App() {
         onPingAiRemote={pingAdminAiRemote}
         onStopAi={stopAdminAi}
         onRetryAiFailed={retryAdminAiFailed}
-        onOpenHistory={() => setAdminHistoryOpen(true)}
+        onOpenHistory={() => {
+          setAdminOpen(true);
+          setAdminHistoryOpen(true);
+        }}
         onSelectJob={selectAdminJob}
         onLoadSheet={loadAdminSheet}
         onSheetFilterChange={setAdminSheetFilter}

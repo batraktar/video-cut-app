@@ -4,6 +4,7 @@ import ApplyChangesModal from './ApplyChangesModal';
 import FfmpegBatchModal from './FfmpegBatchModal';
 import FfmpegCommandModal from './FfmpegCommandModal';
 import HudOverlay from './HudOverlay';
+import JobStatusBar from './JobStatusBar';
 import NotificationsToast from './NotificationsToast';
 
 export default function AppOverlays({
@@ -89,6 +90,14 @@ export default function AppOverlays({
         notifications={notifications}
         isDark={isDark}
         onDismiss={onDismissNotification}
+      />
+      <JobStatusBar
+        job={adminJob}
+        progress={adminJobProgress}
+        isDark={isDark}
+        getJobMeta={getJobMeta}
+        onOpenHistory={onOpenHistory}
+        onStopJob={onStopJob}
       />
       <ApplyChangesModal
         open={applyModalOpen}

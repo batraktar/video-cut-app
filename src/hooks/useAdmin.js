@@ -1869,14 +1869,27 @@ export default function useAdmin({
   }, [adminOpen]);
 
   useEffect(() => {
-    if (!adminOpen || !adminAutoRefresh) return;
+    const hasActiveJob =
+      adminJob?.status === 'running' ||
+      adminJob?.status === 'queued' ||
+      adminJobs.some(job => job.status === 'running' || job.status === 'queued');
+    if (!adminAutoRefresh || (!adminOpen && !hasActiveJob)) return;
     const interval = setInterval(() => {
       const id = adminJobId || adminJob?.id;
       loadAdminJobs({ silent: true });
       if (id) loadAdminJob(id, { silent: true });
     }, 1500);
     return () => clearInterval(interval);
-  }, [adminOpen, adminAutoRefresh, adminJobId, adminJob?.id, loadAdminJobs, loadAdminJob]);
+  }, [
+    adminOpen,
+    adminAutoRefresh,
+    adminJobId,
+    adminJob?.id,
+    adminJob?.status,
+    adminJobs,
+    loadAdminJobs,
+    loadAdminJob
+  ]);
 
   useEffect(() => {
     if (!adminAutoRefresh || adminJobs.length === 0) return;

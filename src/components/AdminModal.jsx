@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { CloudUpload, Layers, Save } from 'lucide-react';
 import { SEGMENT_MODES } from '../lib/editorConstants';
 
+const ADMIN_TABS = [
+  { id: 'files', label: 'Файли' },
+  { id: 'ai', label: 'AI' },
+  { id: 'drive', label: 'Google Drive' },
+  { id: 'jobs', label: 'Завдання' },
+  { id: 'data', label: 'Дані' }
+];
+
 export default function AdminModal({
   open,
   isDark,
@@ -66,6 +74,7 @@ export default function AdminModal({
   const [snowFilter, setSnowFilter] = useState('any');
   const [onlySheet, setOnlySheet] = useState(true);
   const [pickerError, setPickerError] = useState('');
+  const [activeTab, setActiveTab] = useState('files');
 
   useEffect(() => {
     if (!open) return;
@@ -201,6 +210,54 @@ export default function AdminModal({
         </div>
         {adminError && <div className="text-xs text-rose-400 mb-3">{adminError}</div>}
 
+        <div
+          className={`sticky top-0 z-10 mb-4 flex gap-1 overflow-x-auto rounded-xl border p-1 backdrop-blur ${
+            isDark
+              ? 'border-slate-800 bg-slate-900/95'
+              : 'border-slate-200 bg-white/95'
+          }`}
+          role="tablist"
+          aria-label="Розділи адмінки"
+        >
+          {ADMIN_TABS.map(tab => {
+            const isActive = activeTab === tab.id;
+            const badge =
+              tab.id === 'jobs' && adminJobs.length > 0
+                ? adminJobs.length
+                : tab.id === 'ai' && aiQueueTotal > 0
+                  ? `${aiQueueDone}/${aiQueueTotal}`
+                  : null;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => setActiveTab(tab.id)}
+                className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold transition ${
+                  isActive
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : isDark
+                      ? 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+                      : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                }`}
+              >
+                {tab.label}
+                {badge !== null && (
+                  <span
+                    className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[9px] ${
+                      isActive ? 'bg-white/20 text-white' : 'bg-slate-500/15 text-slate-400'
+                    }`}
+                  >
+                    {badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {activeTab === 'files' && (
         <div className="grid gap-4 md:grid-cols-2">
           <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
             <div className="flex items-center justify-between">
@@ -297,8 +354,10 @@ export default function AdminModal({
             )}
           </div>
         </div>
+        )}
 
-        <div className={`mt-4 rounded-lg border p-3 ${isDark ? 'border-sky-900/70 bg-sky-950/30' : 'border-sky-200 bg-sky-50'}`}>
+        {activeTab === 'drive' && (
+        <div className={`rounded-lg border p-3 ${isDark ? 'border-sky-900/70 bg-sky-950/30' : 'border-sky-200 bg-sky-50'}`}>
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="flex items-center gap-2 text-xs font-bold">
@@ -373,6 +432,7 @@ export default function AdminModal({
             </button>
           </div>
         </div>
+        )}
 
         {pickerOpen && (
           <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50">
@@ -479,7 +539,8 @@ export default function AdminModal({
           </div>
         )}
 
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
+        {activeTab === 'ai' && (
+        <div className="grid gap-4 md:grid-cols-2">
           <div className={`rounded-lg border p-3 md:col-span-2 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
             <div className="text-xs font-bold mb-2">AI сегменти</div>
             <div className="grid gap-2 md:grid-cols-2">
@@ -658,8 +719,9 @@ export default function AdminModal({
             )}
           </div>
         </div>
+        )}
 
-        {adminJobProgress !== null && (
+        {activeTab === 'jobs' && adminJobProgress !== null && (
           <div className="mt-4">
             <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
               <div className="flex items-center justify-between mb-2">
@@ -676,6 +738,7 @@ export default function AdminModal({
           </div>
         )}
 
+        {activeTab === 'jobs' && (
         <div className="mt-4">
           <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
             <div className="text-xs font-bold mb-2">Лог поточного job</div>
@@ -684,8 +747,9 @@ export default function AdminModal({
             </pre>
           </div>
         </div>
+        )}
 
-        {adminJobs.length > 0 && (
+        {activeTab === 'jobs' && adminJobs.length > 0 && (
           <div className="mt-4">
             <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
               <div className="flex items-center justify-between mb-2">
@@ -719,7 +783,8 @@ export default function AdminModal({
           </div>
         )}
 
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
+        {activeTab === 'data' && (
+        <div className="grid gap-4 md:grid-cols-2">
           <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
             <div className="flex items-center justify-between">
               <div className="text-xs font-bold">Sheet map</div>
@@ -833,7 +898,9 @@ export default function AdminModal({
             )}
           </div>
         </div>
+        )}
 
+        {activeTab === 'ai' && (
         <div className="mt-4">
           <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
             <div className="text-xs font-bold mb-2">Лого детекція (без тренування)</div>
@@ -933,7 +1000,9 @@ export default function AdminModal({
             )}
           </div>
         </div>
+        )}
 
+        {activeTab === 'files' && (
         <div className="mt-4">
           <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-800 bg-slate-900 shadow-xl' : 'border-slate-200 bg-slate-50'}`}>
             <div className="flex items-center gap-2 mb-3">
@@ -978,6 +1047,7 @@ export default function AdminModal({
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   );
