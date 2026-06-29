@@ -6,6 +6,17 @@ import {
   STORAGE_KEYS
 } from '../lib/editorConstants';
 import {
+  countAiSegments,
+  describeRemoteAiResponse,
+  normalizeRemoteAiSegments,
+  pollRemoteAiTask
+} from '../features/ai/remoteAi';
+import {
+  buildClipchampExportCommand,
+  extractDriveFolderId,
+  formatClipchampFolderName
+} from '../features/export/clipchampExport';
+import {
   buildChannelsFromEntries,
   clamp,
   entriesHaveBoth,
@@ -14,14 +25,12 @@ import {
   getExportDurationForEdit,
   getSegmentsForMode,
   getServerFileKey,
-  getSheetCsvUrl,
   getSuffixForSegmentMode,
   mergeLabelTokens,
   mergeChannelLists,
   normalizeName,
   normalizeSegmentSets,
   parseLabelTokens,
-  parseCsv,
   resolveSegmentModeFromMeta,
   resolveSegmentModeFromSuffix,
   resolveSuffixFromMode,
@@ -146,7 +155,10 @@ export default function useAdmin({
       lastError: null
     }));
     try {
-      const res = await fetch(`${base}/health`, { method: 'GET' });
+      const headers = base.includes('.ngrok-free.app')
+        ? { 'ngrok-skip-browser-warning': 'true' }
+        : undefined;
+      const res = await fetch(`${base}/health`, { method: 'GET', headers });
       if (!res.ok) {
         setAdminAiRemoteState({
           status: 'error',
@@ -185,11 +197,22 @@ export default function useAdmin({
           body: options.json ? JSON.stringify(options.json) : undefined,
           signal: options.signal
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return await res.json();
+        const payload = await res.json().catch(() => null);
+        if (!res.ok) {
+          const error = new Error(`HTTP ${res.status}`);
+          error.status = res.status;
+          error.payload = payload;
+          throw error;
+        }
+        return payload;
       } catch (e) {
         if (!options.silent) {
-          setAdminError('Не вдалося підключитися до сервера');
+          const serverError = e?.payload?.error;
+          if (serverError === 'sheet_read_failed') {
+            setAdminError('Сервер працює, але не вдалося прочитати Google Sheet');
+          } else {
+            setAdminError('Не вдалося підключитися до сервера');
+          }
         }
         return null;
       } finally {
@@ -371,32 +394,23 @@ export default function useAdmin({
     if (sheetMapPromiseRef.current) return sheetMapPromiseRef.current;
     sheetMapPromiseRef.current = (async () => {
       try {
-        const res = await fetch(getSheetCsvUrl(adminConfig));
-        if (!res.ok) throw new Error('sheet_fetch_failed');
-        const csvText = await res.text();
-        const rows = parseCsv(csvText);
-        if (!rows.length) throw new Error('sheet_bad');
-        const headers = rows[0].map(h => String(h).trim().toLowerCase());
-        const idxFile = headers.indexOf('tg_file_name');
-        const idxMode = headers.indexOf('analog_digital');
-        const idxCameraType = headers.indexOf('camera_type');
-        const idxStatus = headers.indexOf('status');
-        const idxLabels = headers.indexOf('labels');
-        if (idxFile === -1) throw new Error('sheet_bad');
+        const data = await fetchAdminJson('/sheet-map');
+        const rows = Array.isArray(data?.rows) ? data.rows : null;
+        if (!rows) throw new Error('sheet_bad');
         const map = new Map();
-        for (let i = 1; i < rows.length; i += 1) {
-          const row = rows[i];
-          const rawName = row[idxFile];
+        for (const row of rows) {
+          const rawName = row.fileName;
           const key = normalizeName(rawName);
           if (!key) continue;
           if (!map.has(key)) map.set(key, []);
           map.get(key).push({
-            rowIndex: i + 1,
+            rowIndex: row.rowIndex,
+            link: String(row.link || '').trim(),
             fileName: String(rawName || '').trim(),
-            analogDigital: row[idxMode] ? String(row[idxMode]).trim() : '',
-            cameraType: row[idxCameraType] ? String(row[idxCameraType]).trim() : '',
-            status: row[idxStatus] ? String(row[idxStatus]).trim() : '',
-            labels: idxLabels >= 0 && row[idxLabels] ? String(row[idxLabels]).trim() : ''
+            analogDigital: String(row.analogDigital || '').trim(),
+            cameraType: String(row.cameraType || '').trim(),
+            status: String(row.status || '').trim(),
+            labels: String(row.labels || '').trim()
           });
         }
         sheetMapRef.current = map;
@@ -410,7 +424,7 @@ export default function useAdmin({
       }
     })();
     return sheetMapPromiseRef.current;
-  }, [adminConfig, showHud]);
+  }, [fetchAdminJson, showHud]);
 
   const buildSnapshotPayload = useCallback(() => {
     const serializeEdit = edit => ({
@@ -798,6 +812,190 @@ export default function useAdmin({
     showHud
   ]);
 
+  const runAdminClipchampExport = useCallback(async () => {
+    const selected = playlist.filter(item => item.checked);
+    const targets = selected.length > 0 ? selected : activeVideo ? [activeVideo] : [];
+    if (targets.length === 0) {
+      showHud("Оберіть відео для Clipchamp");
+      return;
+    }
+
+    const remoteName = String(adminConfig.clipchampDriveRemote || '').trim().replace(/:+$/, '');
+    const rootFolderId = extractDriveFolderId(adminConfig.clipchampDriveFolderId);
+    if (!remoteName || !rootFolderId) {
+      showHud("Заповніть Clipchamp Drive remote і Folder ID");
+      return;
+    }
+
+    const createdAt = new Date();
+    const folderName = formatClipchampFolderName(
+      createdAt,
+      adminConfig.clipchampFolderPrefix || 'Clipchamp'
+    );
+    const localDir = `.clipchamp_exports/${folderName}`;
+    const processingLines = [];
+    const linksRows = [];
+    const manifestFiles = [];
+    const skipped = [];
+    let expectedDuration = 0;
+    const sheetMap = await loadSheetMap();
+
+    targets.forEach(video => {
+      if (video.notRelevant) {
+        skipped.push(video.name || video.id);
+        return;
+      }
+      if (!video.sourcePath) {
+        skipped.push(`${video.name || video.id}: немає server sourcePath`);
+        return;
+      }
+      const edit = edits[video.id] || DEFAULT_EDIT_STATE;
+      const baseVariants = getVideoChannelVariants(video);
+      const existingModes = new Set(baseVariants.map(item => item.channelMode).filter(Boolean));
+      const variants = [...baseVariants];
+      SEGMENT_MODES.forEach(mode => {
+        if (existingModes.has(mode.id)) return;
+        const segments = getSegmentsForMode(edit, mode.id);
+        if (!Array.isArray(segments) || segments.length === 0) return;
+        variants.push({
+          ...video,
+          channelMode: mode.id,
+          suffix: getSuffixForSegmentMode(mode.id)
+        });
+      });
+
+      variants.forEach(variant => {
+        const channelMode = variant.channelMode || getSegmentModeForVideo(variant);
+        const baseSuffix = variant.suffix || getSuffixForSegmentMode(channelMode);
+        const modeSegments = getSegmentsForMode(edit, channelMode);
+        const snowSegments = Array.isArray(modeSegments)
+          ? modeSegments.filter(segment => !!segment?.isSnow)
+          : [];
+        const regularSegments = Array.isArray(modeSegments)
+          ? modeSegments.filter(segment => !segment?.isSnow)
+          : [];
+        const hasSegments = Array.isArray(modeSegments) && modeSegments.length > 0;
+        const jobs = [];
+        if (!hasSegments) {
+          jobs.push({ suffix: baseSuffix, segments: undefined, snow: false });
+        } else {
+          if (regularSegments.length > 0) {
+            jobs.push({ suffix: baseSuffix, segments: regularSegments, snow: false });
+          }
+          if (snowSegments.length > 0) {
+            jobs.push({ suffix: `${baseSuffix}_snow`, segments: snowSegments, snow: true });
+          }
+        }
+
+        jobs.forEach(job => {
+          const exportVideo = { ...variant, suffix: job.suffix, notRelevant: false };
+          const result = buildFfmpegLinesFor(exportVideo, edit, {
+            outputDir: localDir,
+            doneDir: `${localDir}/_done`,
+            useBatchSuffix: false,
+            allowRenameOriginal: false,
+            includeRenameLine: false,
+            overwriteOutput: true,
+            segmentMode: channelMode,
+            segmentsOverride: job.segments,
+            batchSuffix: '',
+            getVideoOutputDir,
+            getVideoDoneDir,
+            getSegmentModeForVideo,
+            buildRcloneCopyLine: null
+          });
+          if (result.error || !result.outputName) {
+            skipped.push(`${video.name || video.id}: ${result.error || 'missing_output'}`);
+            return;
+          }
+
+          processingLines.push(`# ${video.name || video.id} → ${result.outputName}`);
+          processingLines.push(...result.lines, '');
+          const mapEntries = sheetMap?.get(normalizeName(video.name)) || [];
+          const matchingEntry =
+            mapEntries.find(
+              entry =>
+                resolveSegmentModeFromMeta(entry.analogDigital, entry.cameraType) === channelMode
+            ) || mapEntries[0];
+          const sourceLink = variant.sheetLink || matchingEntry?.link || '';
+          const duration = Array.isArray(job.segments)
+            ? job.segments.reduce(
+                (sum, segment) =>
+                  sum + Math.max(0, (segment.end ?? 0) - (segment.start ?? 0)),
+                0
+              )
+            : getExportDurationForEdit(edit, channelMode);
+          expectedDuration += duration;
+          linksRows.push({ link: sourceLink, filename: result.outputName });
+          manifestFiles.push({
+            sourceName: video.name || '',
+            sourcePath: video.sourcePath || '',
+            sourceLink,
+            filename: result.outputName,
+            suffix: job.suffix,
+            channelMode,
+            snow: job.snow,
+            segmentCount: Array.isArray(job.segments) ? job.segments.length : 0,
+            duration: Number(duration.toFixed(3))
+          });
+        });
+      });
+    });
+
+    if (manifestFiles.length === 0) {
+      showHud("Немає валідних відео для Clipchamp");
+      return;
+    }
+
+    const command = buildClipchampExportCommand({
+      localDir,
+      remoteName,
+      rootFolderId,
+      folderName,
+      processingLines,
+      linksRows,
+      manifest: {
+        createdAt: createdAt.toISOString(),
+        folderName,
+        driveFolderId: rootFolderId,
+        remote: remoteName,
+        files: manifestFiles,
+        skipped
+      }
+    });
+    const data = await fetchAdminJson('/jobs', {
+      method: 'POST',
+      json: { command }
+    });
+    if (!data?.id) {
+      showHud("Не вдалося запустити Clipchamp export");
+      return;
+    }
+    adminJobExpectedMapRef.current.set(data.id, expectedDuration || null);
+    setAdminJobId(data.id);
+    setAdminJobExpectedDuration(expectedDuration || null);
+    loadAdminJob(data.id);
+    showHud(`Clipchamp export: ${folderName}`);
+  }, [
+    activeVideo,
+    adminConfig.clipchampDriveFolderId,
+    adminConfig.clipchampDriveRemote,
+    adminConfig.clipchampFolderPrefix,
+    buildFfmpegLinesFor,
+    edits,
+    fetchAdminJson,
+    getExportDurationForEdit,
+    getSegmentModeForVideo,
+    getSuffixForSegmentMode,
+    getVideoChannelVariants,
+    getVideoDoneDir,
+    getVideoOutputDir,
+    loadAdminJob,
+    loadSheetMap,
+    playlist,
+    showHud
+  ]);
+
   const applyAiSegments = useCallback(
     items => {
       if (!Array.isArray(items) || items.length === 0) return;
@@ -988,6 +1186,7 @@ export default function useAdmin({
         const allowedModes = getExpectedModesForAi(item);
         return {
           id: item.id,
+          name: item.name || item.fileKey || item.id,
           fileKey: item.fileKey,
           sourcePath: item.sourcePath,
           allowedModes
@@ -1000,31 +1199,59 @@ export default function useAdmin({
     buildAiQueue(targets, 'local');
     setAdminAiQueue(prev =>
       prev.map(item =>
-        item.sourcePath ? { ...item, status: 'running' } : { ...item, status: 'error', error: 'no_source' }
+        item.sourcePath
+          ? { ...item, status: 'pending' }
+          : { ...item, status: 'error', error: 'no_source' }
       )
     );
     setAdminAiLoading(true);
     setAdminAiStats(null);
     setAdminAiLastRequestAt(Date.now());
     setAdminAiLastError(null);
-    adminAiAbortRef.current = {
-      aborted: false,
-      controller: new AbortController()
-    };
-    const data = await fetchAdminJson('/ai/segments', {
-      method: 'POST',
-      json: {
-        files,
-        modelPath: adminConfig.aiModelPath || '',
-        pythonPath: adminConfig.aiPythonPath || '',
-        fps: Number.isFinite(adminConfig.aiFps) ? adminConfig.aiFps : 1,
-        minDuration: Number.isFinite(adminConfig.aiMinDuration) ? adminConfig.aiMinDuration : 2,
-        writeFfmpeg: true,
-        overwrite: overwriteOutputs
-      },
-      silent: true,
-      signal: adminAiAbortRef.current.controller?.signal
-    });
+    adminAiAbortRef.current = { aborted: false, controller: null };
+    let processed = 0;
+    let failures = targets.length - files.length;
+
+    for (const file of files) {
+      if (adminAiAbortRef.current.aborted) break;
+      setAiQueueStatus(file.id, { status: 'running', error: null });
+      const controller = new AbortController();
+      adminAiAbortRef.current.controller = controller;
+      const data = await fetchAdminJson('/ai/segments', {
+        method: 'POST',
+        json: {
+          files: [file],
+          modelPath: adminConfig.aiModelPath || '',
+          pythonPath: adminConfig.aiPythonPath || '',
+          fps: Number.isFinite(adminConfig.aiFps) ? adminConfig.aiFps : 1,
+          minDuration: Number.isFinite(adminConfig.aiMinDuration) ? adminConfig.aiMinDuration : 2,
+          writeFfmpeg: true,
+          overwrite: overwriteOutputs
+        },
+        silent: true,
+        signal: controller.signal
+      });
+      if (adminAiAbortRef.current.aborted) break;
+
+      const items = Array.isArray(data?.payload?.items) ? data.payload.items : [];
+      if (!data?.ok || items.length === 0) {
+        failures += 1;
+        setAiQueueStatus(file.id, {
+          status: 'error',
+          error: data?.ok ? 'no_segments' : 'request_failed'
+        });
+        setAdminAiStats({ processed, failed: failures });
+        continue;
+      }
+
+      applyAiSegments(items);
+      processed += items.length;
+      setAiQueueStatus(file.id, { status: 'done', error: null });
+      setAdminAiStats({ processed, failed: failures });
+      showHud(`AI готово: ${file.name}`);
+    }
+
+    adminAiAbortRef.current.controller = null;
     setAdminAiLoading(false);
     if (adminAiAbortRef.current.aborted) {
       setAdminAiQueue(prev =>
@@ -1037,38 +1264,14 @@ export default function useAdmin({
       showHud("AI зупинено");
       return;
     }
-    if (!data?.ok) {
+    setAdminAiStats({ processed, failed: failures });
+    if (processed === 0) {
       setAdminAiLastError('AI failed');
-      setAdminAiQueue(prev =>
-        prev.map(item =>
-          item.status === 'running' || item.status === 'pending'
-            ? { ...item, status: 'error', error: 'request_failed' }
-            : item
-        )
-      );
       showHud("AI не відпрацював");
       return;
     }
-    const items = data.payload?.items || [];
-    applyAiSegments(items);
-    const itemIds = new Set(items.map(item => item.id).filter(Boolean));
-    const itemPaths = new Set(items.map(item => item.sourcePath).filter(Boolean));
-    setAdminAiQueue(prev =>
-      prev.map(item => {
-        if (itemIds.has(item.id) || (item.sourcePath && itemPaths.has(item.sourcePath))) {
-          return { ...item, status: 'done' };
-        }
-        if (item.status === 'error') return item;
-        return { ...item, status: 'error', error: 'no_segments' };
-      })
-    );
-    setAdminAiStats({
-      processed: items.length,
-      failed: targets.length - items.length
-    });
-    showHud(`AI сегменти: ${items.length}`);
+    showHud(failures > 0 ? `AI: ${processed}, помилок: ${failures}` : `AI сегменти: ${processed}`);
   }, [
-    activeVideo,
     adminConfig.aiFps,
     adminConfig.aiMinDuration,
     adminConfig.aiModelPath,
@@ -1078,8 +1281,8 @@ export default function useAdmin({
     fetchAdminJson,
     getExpectedModesForAi,
     overwriteOutputs,
-    playlist,
     resolveAiTargets,
+    setAiQueueStatus,
     showHud
   ]);
 
@@ -1097,8 +1300,16 @@ export default function useAdmin({
     const fps = Number.isFinite(adminConfig.aiFps) ? adminConfig.aiFps : 1;
     const minDuration = Number.isFinite(adminConfig.aiMinDuration) ? adminConfig.aiMinDuration : 2;
     const modeSet = new Set(SEGMENT_MODES.map(mode => mode.id));
+    const remoteHeaders = remoteBase.includes('.ngrok-free.app')
+      ? { 'ngrok-skip-browser-warning': 'true' }
+      : undefined;
     let failures = 0;
     const items = [];
+    const updateStats = () =>
+      setAdminAiStats({
+        processed: items.length,
+        failed: failures
+      });
 
     buildAiQueue(targets, 'colab');
     setAdminAiLoading(true);
@@ -1108,7 +1319,14 @@ export default function useAdmin({
     adminAiAbortRef.current = { aborted: false, controller: null };
     for (const target of targets) {
       if (adminAiAbortRef.current.aborted) break;
-      setAiQueueStatus(target.id, { status: 'running', error: null });
+      setAiQueueStatus(target.id, {
+        status: 'running',
+        error: null,
+        errorDetail: null,
+        taskId: null
+      });
+      const controller = new AbortController();
+      adminAiAbortRef.current.controller = controller;
       let fileBlob = null;
       let fileName = target?.name || 'video.mp4';
       if (target?.file instanceof Blob) {
@@ -1118,19 +1336,21 @@ export default function useAdmin({
         const base = adminBaseUrl.replace(/\/+$/, '');
         const url = `${base}/file?path=${encodeURIComponent(target.sourcePath)}`;
         try {
-          const res = await fetch(url);
+          const res = await fetch(url, { signal: controller.signal });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           fileBlob = await res.blob();
           fileName = target.sourcePath.split('/').pop() || fileName;
-        } catch (e) {
+        } catch {
           failures += 1;
           setAiQueueStatus(target.id, { status: 'error', error: 'fetch_failed' });
+          updateStats();
           continue;
         }
       }
       if (!fileBlob) {
         failures += 1;
         setAiQueueStatus(target.id, { status: 'error', error: 'no_source' });
+        updateStats();
         continue;
       }
 
@@ -1142,22 +1362,37 @@ export default function useAdmin({
       try {
         const res = await fetch(`${remoteBase}/predict`, {
           method: 'POST',
-          body: formData
+          body: formData,
+          headers: remoteHeaders,
+          signal: controller.signal
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!data?.ok) {
+        const queuedResult = await res.json();
+        if (!queuedResult?.ok) {
           failures += 1;
           setAiQueueStatus(target.id, { status: 'error', error: 'remote_failed' });
+          updateStats();
           continue;
         }
+        if (queuedResult.task_id) {
+          setAiQueueStatus(target.id, { taskId: queuedResult.task_id });
+        }
+        const data =
+          queuedResult.status === 'queued' && queuedResult.task_id
+            ? await pollRemoteAiTask({
+                baseUrl: remoteBase,
+                taskId: queuedResult.task_id,
+                headers: remoteHeaders,
+                signal: controller.signal
+              })
+            : queuedResult;
         setAdminAiRemoteState({
           status: 'ok',
           lastCheckedAt: Date.now(),
           lastHttp: res.status,
           lastError: null
         });
-        const rawSegments = data.segments || {};
+        const rawSegments = normalizeRemoteAiSegments(data);
         const allowedModes = getExpectedModesForAi(target);
         const filtered = {};
         Object.keys(rawSegments).forEach(label => {
@@ -1165,12 +1400,41 @@ export default function useAdmin({
           if (allowedModes.length > 0 && !allowedModes.includes(label)) return;
           filtered[label] = rawSegments[label];
         });
-        items.push({
+        const segmentCount = countAiSegments(filtered);
+        if (segmentCount === 0) {
+          failures += 1;
+          const diagnostic = describeRemoteAiResponse(data);
+          const expected = allowedModes.length > 0 ? allowedModes.join(', ') : 'будь-який';
+          const taskLabel = queuedResult.task_id ? `task ${queuedResult.task_id}; ` : '';
+          const errorDetail = `${taskLabel}${diagnostic}; очікувався канал: ${expected}`;
+          setAdminAiLastError(
+            `${fileName}: Colab завершив task, але inference повернув порожній result. ` +
+              `Canvas і parser отримали 0 сегментів. ${errorDetail}`
+          );
+          setAiQueueStatus(target.id, {
+            status: 'error',
+            error: 'no_segments',
+            errorDetail,
+            segmentCount: 0
+          });
+          updateStats();
+          continue;
+        }
+        const completedItem = {
           id: target.id,
           sourcePath: target.sourcePath || '',
           segments: filtered
+        };
+        items.push(completedItem);
+        applyAiSegments([completedItem]);
+        setAiQueueStatus(target.id, {
+          status: 'done',
+          error: null,
+          errorDetail: null,
+          segmentCount
         });
-        setAiQueueStatus(target.id, { status: 'done' });
+        updateStats();
+        showHud(`AI готово: ${fileName}`);
       } catch (e) {
         failures += 1;
         setAdminAiLastError(String(e?.message || e));
@@ -1180,9 +1444,15 @@ export default function useAdmin({
           lastHttp: null,
           lastError: String(e?.message || e)
         });
-        setAiQueueStatus(target.id, { status: 'error', error: 'remote_error' });
+        setAiQueueStatus(target.id, {
+          status: 'error',
+          error: 'remote_error',
+          errorDetail: String(e?.message || e)
+        });
+        updateStats();
       }
     }
+    adminAiAbortRef.current.controller = null;
     setAdminAiLoading(false);
     if (adminAiAbortRef.current.aborted) {
       setAdminAiQueue(prev =>
@@ -1199,14 +1469,12 @@ export default function useAdmin({
       showHud(failures > 0 ? "AI Colab не відпрацював" : "Немає сегментів");
       return;
     }
-    applyAiSegments(items);
     setAdminAiStats({
       processed: items.length,
       failed: failures
     });
     showHud(failures > 0 ? `AI Colab: ${items.length}, помилок: ${failures}` : `AI Colab: ${items.length}`);
   }, [
-    activeVideo,
     adminBaseUrl,
     adminConfig.aiFps,
     adminConfig.aiMinDuration,
@@ -1214,7 +1482,6 @@ export default function useAdmin({
     applyAiSegments,
     buildAiQueue,
     getExpectedModesForAi,
-    playlist,
     resolveAiTargets,
     setAiQueueStatus,
     showHud
@@ -1387,7 +1654,10 @@ export default function useAdmin({
       return;
     }
     const sheetMap = await loadSheetMap();
-    if (!sheetMap) showHud("Таблиця не завантажена, суфікси не підтягнуто");
+    if (!sheetMap) {
+      showHud("Таблиця не завантажена");
+      if (onlySheet) return;
+    }
     const savedEdits = savedEditsRef.current || {};
     const existingByFileKey = new Map(
       playlistRef.current.filter(v => v.fileKey).map(v => [v.fileKey, v])
@@ -1540,7 +1810,6 @@ export default function useAdmin({
       }
     }
     if (!currentId && dedupedList[0]) setCurrentId(dedupedList[0].id);
-    setAdminImportStats({ added: newVideos.length, skipped, filteredOut });
     if (newVideos.length === 0) {
       showHud("Нових файлів немає");
       return;
@@ -1720,6 +1989,7 @@ export default function useAdmin({
     loadAdminJob,
     loadSheetMap,
     runAdminFfmpeg,
+    runAdminClipchampExport,
     runAdminAiSegments,
     runAdminAiSegmentsRemote,
     runAdminLogoDetection,

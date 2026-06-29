@@ -279,6 +279,7 @@ export const buildChannelsFromEntries = entries => {
       sheetCameraType: entry.cameraType || '',
       sheetStatus: entry.status || '',
       sheetRow: entry.rowIndex || null,
+      sheetLink: entry.link || '',
       labels: rawLabels,
       hasSnow: hasSnowLabel
     });

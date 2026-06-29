@@ -8,17 +8,32 @@ import fs from 'fs';
 import { spawn, execFile } from 'child_process';
 import path from 'path';
 import os from 'os';
+import {
+  buildLinkFilenameMap,
+  buildSheetRows,
+  resolveSheetFilenames
+} from './sheetRows.js';
 
 const PORT = process.env.PORT || 7071;
 const DB_PATH = process.env.DB_PATH || new URL('./metadata.sqlite', import.meta.url).pathname;
-const SHEET_ID = process.env.SHEET_ID || '1hyGuwwz_x6gkvt587yox4EPsK00Mtk_cvtNoX6hU6bQ';
-const SHEET_GID = process.env.SHEET_GID || '1651996986';
-const SHEET_NAME = process.env.SHEET_NAME || 'pre-final';
-const SHEET_RANGE = process.env.SHEET_RANGE || `${SHEET_NAME}!A:E`;
+const ENV_SHEET_ID = process.env.SHEET_ID || '';
+const ENV_SHEET_GID = process.env.SHEET_GID || '';
+const ENV_SHEET_NAME = process.env.SHEET_NAME || '';
+const ENV_SHEET_RANGE = process.env.SHEET_RANGE || '';
+const DEFAULT_SHEET_ID =
+  ENV_SHEET_ID || '1hyGuwwz_x6gkvt587yox4EPsK00Mtk_cvtNoX6hU6bQ';
+const DEFAULT_SHEET_GID = ENV_SHEET_GID || '1651996986';
+const DEFAULT_SHEET_NAME = ENV_SHEET_NAME || 'pre-final';
+const DEFAULT_SHEET_RANGE = ENV_SHEET_RANGE || `${DEFAULT_SHEET_NAME}!A:K`;
 const SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '';
 const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SERVICE_ACCOUNT_PATH || '';
 const DEFAULT_BASE_DIR = process.env.VIDEO_BASE_DIR || '';
 const DEFAULT_SHELL = process.env.JOB_SHELL || '/bin/bash';
+const DEFAULT_CLIPCHAMP_DRIVE_REMOTE =
+  process.env.CLIPCHAMP_DRIVE_REMOTE || 'lqd-kotyk-helper';
+const DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID =
+  process.env.CLIPCHAMP_DRIVE_FOLDER_ID || '1_bNIOZBZfbHQU9oEC2e_5Xqu5lSC4D2H';
+const DEFAULT_CLIPCHAMP_FOLDER_PREFIX = process.env.CLIPCHAMP_FOLDER_PREFIX || 'Clipchamp';
 const AI_SCRIPT_PATH =
   process.env.AI_SCRIPT_PATH ||
   path.resolve(process.cwd(), '..', '..', 'ml', 'batch_predict_segments.py');
@@ -100,7 +115,6 @@ const loadServiceAccount = () => {
 };
 
 const initSheetsClient = () => {
-  if (!SHEET_ID) return null;
   const creds = loadServiceAccount();
   if (!creds?.client_email || !creds?.private_key) return null;
   const auth = new google.auth.JWT(
@@ -113,51 +127,69 @@ const initSheetsClient = () => {
   return sheetsClient;
 };
 
-const normalizeHeader = header => header.trim().toLowerCase();
-
-const buildRowMap = rows => {
-  if (!rows || rows.length === 0) return [];
-  const headers = rows[0].map(normalizeHeader);
-  const idxFile = headers.indexOf('tg_file_name');
-  const idxMode = headers.indexOf('analog_digital');
-  const idxStatus = headers.indexOf('status');
-  const idxCamera = headers.indexOf('camera_type');
-  const output = [];
-  for (let i = 1; i < rows.length; i += 1) {
-    const row = rows[i];
-    const fileName = row[idxFile];
-    if (!fileName) continue;
-    output.push({
-      rowIndex: i + 1,
-      fileName: String(fileName).trim(),
-      analogDigital: row[idxMode] ? String(row[idxMode]).trim() : '',
-      status: row[idxStatus] ? String(row[idxStatus]).trim() : '',
-      cameraType: row[idxCamera] ? String(row[idxCamera]).trim() : ''
-    });
+const loadLinkFilenameMap = async baseDir => {
+  if (!baseDir) return { map: new Map(), sourcePath: '' };
+  const candidates = [
+    path.join(baseDir, 'links_map.csv'),
+    path.join(path.dirname(baseDir), 'links_map.csv')
+  ];
+  for (const candidate of candidates) {
+    try {
+      const csvText = await fs.promises.readFile(candidate, 'utf8');
+      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+      return { map: buildLinkFilenameMap(parsed.data || []), sourcePath: candidate };
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
   }
-  return output;
+  return { map: new Map(), sourcePath: '' };
 };
 
 const fetchSheetRows = async () => {
+  const config = await getConfig();
+  const sheetId = config.sheetId || DEFAULT_SHEET_ID;
+  const sheetGid = config.sheetGid || DEFAULT_SHEET_GID;
+  const sheetRange = config.sheetRange || DEFAULT_SHEET_RANGE;
+  let values;
   if (sheetsClient) {
     const result = await sheetsClient.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: SHEET_RANGE
+      spreadsheetId: sheetId,
+      range: sheetRange
     });
-    return buildRowMap(result.data.values || []);
+    values = result.data.values || [];
+  } else {
+    if (!sheetId) return { rows: [], totalRows: 0, resolvedFromLinksMap: 0, unresolvedRows: 0 };
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${sheetGid}`;
+    const res = await fetch(csvUrl);
+    if (!res.ok) throw new Error('csv_fetch_failed');
+    const csvText = await res.text();
+    const parsed = Papa.parse(csvText, { skipEmptyLines: true });
+    values = parsed.data || [];
   }
-  if (!SHEET_ID) return [];
-  const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
-  const res = await fetch(csvUrl);
-  if (!res.ok) throw new Error('csv_fetch_failed');
-  const csvText = await res.text();
-  const parsed = Papa.parse(csvText, { skipEmptyLines: true });
-  return buildRowMap(parsed.data || []);
+
+  const sheetRows = buildSheetRows(values);
+  const linkMap = await loadLinkFilenameMap(config.baseDir || DEFAULT_BASE_DIR);
+  return {
+    ...resolveSheetFilenames(sheetRows, linkMap.map),
+    linksMapPath: linkMap.sourcePath
+  };
 };
 
 const getConfig = async () => {
   const row = await db.get('SELECT payload FROM config WHERE id = 1');
-  if (!row) return { baseDir: DEFAULT_BASE_DIR, shell: DEFAULT_SHELL };
+  if (!row) {
+    return {
+      baseDir: DEFAULT_BASE_DIR,
+      shell: DEFAULT_SHELL,
+      sheetId: DEFAULT_SHEET_ID,
+      sheetGid: DEFAULT_SHEET_GID,
+      sheetName: DEFAULT_SHEET_NAME,
+      sheetRange: DEFAULT_SHEET_RANGE,
+      clipchampDriveRemote: DEFAULT_CLIPCHAMP_DRIVE_REMOTE,
+      clipchampDriveFolderId: DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID,
+      clipchampFolderPrefix: DEFAULT_CLIPCHAMP_FOLDER_PREFIX
+    };
+  }
   try {
     const payload = JSON.parse(row.payload);
     return {
@@ -175,7 +207,30 @@ const getConfig = async () => {
       logoMinDuration: typeof payload.logoMinDuration === 'number' ? payload.logoMinDuration : 0.5,
       logoMaxMatches: typeof payload.logoMaxMatches === 'number' ? payload.logoMaxMatches : 5,
       logoMaxGap: typeof payload.logoMaxGap === 'number' ? payload.logoMaxGap : 0.5,
-      logoScales: typeof payload.logoScales === 'string' ? payload.logoScales : '0.9,1.0,1.1'
+      logoScales: typeof payload.logoScales === 'string' ? payload.logoScales : '0.9,1.0,1.1',
+      clipchampDriveRemote:
+        typeof payload.clipchampDriveRemote === 'string'
+          ? payload.clipchampDriveRemote
+          : DEFAULT_CLIPCHAMP_DRIVE_REMOTE,
+      clipchampDriveFolderId:
+        typeof payload.clipchampDriveFolderId === 'string'
+          ? payload.clipchampDriveFolderId
+          : DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID,
+      clipchampFolderPrefix:
+        typeof payload.clipchampFolderPrefix === 'string'
+          ? payload.clipchampFolderPrefix
+          : DEFAULT_CLIPCHAMP_FOLDER_PREFIX,
+      sheetId:
+        ENV_SHEET_ID || (typeof payload.sheetId === 'string' ? payload.sheetId : DEFAULT_SHEET_ID),
+      sheetGid:
+        ENV_SHEET_GID ||
+        (typeof payload.sheetGid === 'string' ? payload.sheetGid : DEFAULT_SHEET_GID),
+      sheetName:
+        ENV_SHEET_NAME ||
+        (typeof payload.sheetName === 'string' ? payload.sheetName : DEFAULT_SHEET_NAME),
+      sheetRange:
+        ENV_SHEET_RANGE ||
+        (typeof payload.sheetRange === 'string' ? payload.sheetRange : DEFAULT_SHEET_RANGE)
     };
   } catch (e) {
     return {
@@ -193,7 +248,14 @@ const getConfig = async () => {
       logoMinDuration: 0.5,
       logoMaxMatches: 5,
       logoMaxGap: 0.5,
-      logoScales: '0.9,1.0,1.1'
+      logoScales: '0.9,1.0,1.1',
+      clipchampDriveRemote: DEFAULT_CLIPCHAMP_DRIVE_REMOTE,
+      clipchampDriveFolderId: DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID,
+      clipchampFolderPrefix: DEFAULT_CLIPCHAMP_FOLDER_PREFIX,
+      sheetId: DEFAULT_SHEET_ID,
+      sheetGid: DEFAULT_SHEET_GID,
+      sheetName: DEFAULT_SHEET_NAME,
+      sheetRange: DEFAULT_SHEET_RANGE
     };
   }
 };
@@ -229,7 +291,23 @@ const saveConfig = async updates => {
         : current.logoMaxMatches,
     logoMaxGap:
       typeof updates.logoMaxGap === 'number' ? updates.logoMaxGap : current.logoMaxGap,
-    logoScales: typeof updates.logoScales === 'string' ? updates.logoScales : current.logoScales
+    logoScales: typeof updates.logoScales === 'string' ? updates.logoScales : current.logoScales,
+    clipchampDriveRemote:
+      typeof updates.clipchampDriveRemote === 'string'
+        ? updates.clipchampDriveRemote
+        : current.clipchampDriveRemote,
+    clipchampDriveFolderId:
+      typeof updates.clipchampDriveFolderId === 'string'
+        ? updates.clipchampDriveFolderId
+        : current.clipchampDriveFolderId,
+    clipchampFolderPrefix:
+      typeof updates.clipchampFolderPrefix === 'string'
+        ? updates.clipchampFolderPrefix
+        : current.clipchampFolderPrefix,
+    sheetId: typeof updates.sheetId === 'string' ? updates.sheetId : current.sheetId,
+    sheetGid: typeof updates.sheetGid === 'string' ? updates.sheetGid : current.sheetGid,
+    sheetName: typeof updates.sheetName === 'string' ? updates.sheetName : current.sheetName,
+    sheetRange: typeof updates.sheetRange === 'string' ? updates.sheetRange : current.sheetRange
   };
   const updatedAt = new Date().toISOString();
   await db.run(
@@ -817,9 +895,10 @@ app.get('/file', async (req, res) => {
 
 app.get('/sheet-map', async (req, res) => {
   try {
-    const rows = await fetchSheetRows();
-    res.json({ ok: true, rows, updatedAt: new Date().toISOString() });
+    const result = await fetchSheetRows();
+    res.json({ ok: true, ...result, updatedAt: new Date().toISOString() });
   } catch (e) {
+    console.error('Sheet read failed', e?.response?.data?.error || e?.message || e);
     res.status(500).json({ ok: false, error: 'sheet_read_failed' });
   }
 });
@@ -832,9 +911,10 @@ app.post('/sheet/status', async (req, res) => {
     const { rowIndex, status } = req.body || {};
     if (!rowIndex) return res.status(400).json({ ok: false, error: 'missing_row' });
     const value = status || 'done';
+    const config = await getConfig();
     await sheetsClient.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: `${SHEET_NAME}!B${rowIndex}`,
+      spreadsheetId: config.sheetId || DEFAULT_SHEET_ID,
+      range: `${config.sheetName || DEFAULT_SHEET_NAME}!B${rowIndex}`,
       valueInputOption: 'RAW',
       requestBody: { values: [[value]] }
     });

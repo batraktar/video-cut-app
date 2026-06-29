@@ -17,7 +17,7 @@ export default function FfmpegCommandModal({
           Запускайте в теці з відео. Вивід буде у `cutted/` без `_done`, а оригінал після
           успішного експорту отримає `_done` і переїде в `done/` (якщо є thermal —
           `_done` ставиться на thermal, інакше на analog). За потреби файл піде в Google
-          Drive через `rclone` (`gdrive:22.12.2025 [ATV&Drone]`).
+          Drive через `rclone` (`lqd-kotyk-helper:22.12.2025 [ATV&Drone]`).
         </div>
         <textarea
           readOnly

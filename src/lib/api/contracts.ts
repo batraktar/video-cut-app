@@ -13,8 +13,13 @@ export type AdminConfig = {
   logoMaxMatches: number;
   logoMaxGap: number;
   logoScales: string;
+  clipchampDriveRemote: string;
+  clipchampDriveFolderId: string;
+  clipchampFolderPrefix: string;
   sheetId: string;
   sheetGid: string;
+  sheetName: string;
+  sheetRange: string;
 };
 
 export type ApiOk<T> = { ok: true } & T;
@@ -31,10 +36,12 @@ export type VideoFile = {
 
 export type SheetRow = {
   rowIndex: number;
+  link: string;
   fileName: string;
   analogDigital: string;
   status: string;
   cameraType: string;
+  labels: string;
 };
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'canceled';
@@ -48,4 +55,3 @@ export type Job = {
   createdAt: string;
   updatedAt: string;
 };
-

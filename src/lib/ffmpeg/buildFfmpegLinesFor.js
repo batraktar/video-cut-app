@@ -102,6 +102,8 @@ export const buildFfmpegLinesFor = (video, edit, options = {}) => {
           ...(includeRenameLine && renameLine ? [renameLine] : [])
         ],
         usesTemp: false,
+        outputName,
+        outputPath,
         needsOutputDir: true,
         outputDir,
         doneDir,
@@ -135,6 +137,8 @@ export const buildFfmpegLinesFor = (video, edit, options = {}) => {
     return {
       lines,
       usesTemp: true,
+      outputName,
+      outputPath,
       needsOutputDir: true,
       outputDir,
       tmpDir,
@@ -155,6 +159,8 @@ export const buildFfmpegLinesFor = (video, edit, options = {}) => {
       ...(includeRenameLine && renameLine ? [renameLine] : [])
     ],
     usesTemp: false,
+    outputName,
+    outputPath,
     needsOutputDir: true,
     outputDir,
     doneDir,

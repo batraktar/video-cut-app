@@ -4,7 +4,6 @@ function PlayerViewport({
   viewportRef,
   overlayRef,
   videoRef,
-  isDark,
   isFocusMode,
   focusHeightPx,
   viewportHeightClass,
@@ -24,7 +23,8 @@ function PlayerViewport({
   onDragStart,
   onSelectElement,
   onFocusResizeStart,
-  visibleElements
+  visibleElements,
+  canvasTool
 }) {
   const hasSnowSegments = edit => {
     if (!edit) return false;
@@ -42,11 +42,13 @@ function PlayerViewport({
   return (
     <div
       ref={viewportRef}
-      className={`rounded-t-xl shadow-lg relative flex flex-col items-center justify-center flex-shrink-1 min-h-[300px] ${viewportHeightClass} select-none group border-b ${isFocusMode ? 'p-0' : 'p-8'
-        } overflow-auto ${isDark ? 'bg-black border-slate-800' : 'bg-zinc-900 border-zinc-800'}`}
+      className={`cvat-canvas-bg relative flex min-h-[280px] flex-1 flex-col items-center justify-center overflow-hidden select-none group ${viewportHeightClass} ${
+        canvasTool === 'pan' ? 'cursor-grab active:cursor-grabbing' : ''
+      }`}
       style={isFocusMode ? { height: focusHeightPx } : undefined}
       onMouseEnter={onViewportMouseEnter}
       onMouseLeave={onViewportMouseLeave}
+      onMouseDown={canvasTool === 'pan' ? onPanStart : undefined}
     >
       {showSnow && (
         <div
@@ -56,7 +58,9 @@ function PlayerViewport({
       )}
       <div
         ref={overlayRef}
-        className={`relative z-10 shadow-2xl inline-block ${zoom > 1 ? 'cursor-grab active:cursor-grabbing' : ''}`}
+        className={`relative z-10 inline-block border border-black/80 shadow-[0_16px_48px_rgba(0,0,0,0.55)] ${
+          canvasTool === 'pan' || zoom > 1 ? 'cursor-grab active:cursor-grabbing' : ''
+        }`}
         style={getPreviewStyle()}
         onMouseDown={onPanStart}
         onContextMenu={e => e.preventDefault()}

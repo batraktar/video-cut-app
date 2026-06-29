@@ -69,7 +69,16 @@ export const createApiClient = (baseUrl: string) => {
     listFiles: () => requestJson<ApiResult<{ baseDir: string; files: VideoFile[] }>>(baseUrl, '/files'),
 
     sheetMap: () =>
-      requestJson<ApiResult<{ rows: SheetRow[]; updatedAt: string }>>(baseUrl, '/sheet-map'),
+      requestJson<
+        ApiResult<{
+          rows: SheetRow[];
+          totalRows: number;
+          resolvedFromLinksMap: number;
+          unresolvedRows: number;
+          linksMapPath: string;
+          updatedAt: string;
+        }>
+      >(baseUrl, '/sheet-map'),
     sheetStatus: (rowIndex: number, status: string) =>
       requestJson<ApiResult<Record<string, unknown>>>(baseUrl, '/sheet/status', {
         method: 'POST',

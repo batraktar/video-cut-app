@@ -13,6 +13,10 @@ dist-ssr
 *.local
 dev-server.log
 server/metadata.sqlite
+server/.env
+tools/telegram-downloader/Telegram Uploads/
+tools/telegram-downloader/telegram_session.session
+tools/telegram-downloader/*.session-journal
 
 # Editor directories and files
 .vscode/*

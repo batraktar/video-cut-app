@@ -27,6 +27,7 @@ function PropertiesPanel({
   openFfmpegModal,
   openFfmpegBatchModal,
   toggleNotRelevant,
+  addRect,
   addCircle,
   clearSegments,
   activeSegments,
@@ -67,23 +68,30 @@ function PropertiesPanel({
 
   return (
     <div
-      className={`w-full lg:w-80 border-l p-6 overflow-y-auto ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
+      className={`h-full w-full overflow-y-auto p-3 ${isDark ? 'bg-slate-900' : 'bg-slate-50'
         }`}
     >
-      <div className="mb-8">
+      <div className="mb-3 grid grid-cols-2 gap-2">
         <button
-          onClick={addCircle}
-          className={`mt-3 w-full py-3 border rounded-xl flex items-center justify-center gap-2 text-sm font-bold transition ${isDark ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200' : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+          onClick={addRect}
+          className={`w-full py-2 border rounded-md flex items-center justify-center gap-2 text-xs font-bold transition ${isDark ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200' : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
             }`}
         >
-          <Circle className="w-4 h-4" /> Додати коло
+          <Square className="w-4 h-4" /> Прямокутник
+        </button>
+        <button
+          onClick={addCircle}
+          className={`w-full py-2 border rounded-md flex items-center justify-center gap-2 text-xs font-bold transition ${isDark ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200' : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+            }`}
+        >
+          <Circle className="w-4 h-4" /> Коло
         </button>
       </div>
-      <div className={`mb-8 p-4 rounded-xl border ${isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+      <div className={`mb-3 p-3 rounded-md border ${isDark ? 'bg-slate-800/70 border-slate-700' : 'bg-white border-slate-200'}`}>
         <button
           onClick={openFfmpegModal}
           disabled={!activeVideo}
-          className="mt-3 w-full py-2 rounded-lg text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white disabled:bg-slate-400"
+          className="w-full py-2 rounded text-xs font-bold bg-slate-950 hover:bg-black text-white disabled:bg-slate-400"
         >
           Показати команду
         </button>
@@ -95,11 +103,11 @@ function PropertiesPanel({
           Масовий експорт (обрані)
         </button>
       </div>
-      <div className={`mb-8 p-4 rounded-xl border ${isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+      <div className={`mb-3 p-3 rounded-md border ${isDark ? 'bg-slate-800/70 border-slate-700' : 'bg-white border-slate-200'}`}>
         <button
           onClick={() => activeVideo && toggleNotRelevant(activeVideo.id)}
           disabled={!activeVideo}
-          className={`mt-3 w-full py-2 rounded-lg text-xs font-bold border ${activeVideo?.notRelevant
+          className={`w-full py-2 rounded text-xs font-bold border ${activeVideo?.notRelevant
             ? 'bg-rose-600 border-rose-500 text-white'
             : isDark
               ? 'bg-slate-900 border-slate-700 text-slate-200'
@@ -109,7 +117,7 @@ function PropertiesPanel({
           {activeVideo?.notRelevant ? 'Not relevant: ON' : 'Not relevant: OFF'}
         </button>
       </div>
-      <div className={`mb-8 p-4 rounded-xl border space-y-3 ${isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+      <div className={`mb-3 p-3 rounded-md border space-y-3 ${isDark ? 'bg-slate-800/70 border-slate-700' : 'bg-white border-slate-200'}`}>
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-sm">Сегменти (експорт)</h3>
           <button
@@ -290,7 +298,7 @@ function PropertiesPanel({
         </div>
       </div>
       {selectedElement ? (
-        <div className={`p-4 rounded-xl border space-y-4 animate-in fade-in ${isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+        <div className={`p-3 rounded-md border space-y-3 animate-in fade-in ${isDark ? 'bg-slate-800/70 border-slate-700' : 'bg-white border-slate-200'}`}>
           <div className={`flex items-center justify-between border-b pb-2 ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
             <h3 className="font-bold text-sm">Налаштування</h3>
             <div className="flex gap-1">
@@ -517,7 +525,7 @@ function PropertiesPanel({
           </div>
         </div>
       ) : (
-        <div className={`p-8 text-center text-xs border border-dashed rounded-xl ${isDark ? 'border-slate-700 bg-slate-800 text-slate-400' : 'border-slate-200 bg-slate-50 text-slate-400'}`}>
+        <div className={`p-5 text-center text-xs border border-dashed rounded-md ${isDark ? 'border-slate-700 bg-slate-800/70 text-slate-400' : 'border-slate-300 bg-white text-slate-400'}`}>
           Натисніть на фігуру на відео або таймлайні, щоб редагувати її
         </div>
       )}

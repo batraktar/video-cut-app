@@ -3,6 +3,7 @@ import {
   DEFAULT_EDIT_STATE,
   MAX_HISTORY,
   RCLONE_FOLDER,
+  RCLONE_FLAGS,
   RCLONE_REMOTE,
   SEGMENT_MODES,
   STORAGE_KEYS,
@@ -624,7 +625,9 @@ export default function App() {
     showHud(`Сегменти: ${next.label}`);
   };
   const buildRcloneCopyLine = outputPath =>
-    uploadToDrive ? `rclone copy "${outputPath}" "${RCLONE_REMOTE}:${RCLONE_FOLDER}"` : null;
+    uploadToDrive
+      ? `rclone copy "${outputPath}" "${RCLONE_REMOTE}:${RCLONE_FOLDER}" ${RCLONE_FLAGS}`
+      : null;
   const startSidebarResize = e => {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -709,7 +712,8 @@ export default function App() {
         suffix: channel.suffix || resolveSuffixFromMode(channel.sheetMode, channel.sheetCameraType),
         sheetMode: channel.sheetMode || video.sheetMode || '',
         sheetCameraType: channel.sheetCameraType || video.sheetCameraType || '',
-        sheetStatus: channel.sheetStatus || video.sheetStatus || ''
+        sheetStatus: channel.sheetStatus || video.sheetStatus || '',
+        sheetLink: channel.sheetLink || video.sheetLink || ''
       }));
     }
     const fallbackMode = getSegmentModeForVideo(video);
@@ -1011,6 +1015,7 @@ export default function App() {
     applySnapshotPayload,
     loadSheetMap,
     runAdminFfmpeg,
+    runAdminClipchampExport,
     runAdminAiSegments,
     runAdminAiSegmentsRemote,
     runAdminLogoDetection,
@@ -2230,11 +2235,12 @@ export default function App() {
     };
   }, []);
 
-  function startPan(e) {
+  function startPan(e, force = false) {
     if (currentEdit.viewMode !== 'editor') return;
-    const wantsPan = spacePanRef.current || e.button === 1 || e.button === 2;
+    const wantsPan = force || spacePanRef.current || e.button === 1 || e.button === 2;
     if (!wantsPan && zoom <= 1) return;
     e.preventDefault();
+    e.stopPropagation();
     if (autoSaveEnabledRef.current) setAutoSaveEnabled(false);
     isDragging.current = true;
     dragTarget.current = { type: 'pan' };
@@ -2281,11 +2287,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    const overlay = overlayRef.current;
-    if (!overlay) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
     const onWheel = e => handleWheelZoom(e);
-    overlay.addEventListener('wheel', onWheel, { passive: false });
-    return () => overlay.removeEventListener('wheel', onWheel);
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+    return () => viewport.removeEventListener('wheel', onWheel);
   }, [handleWheelZoom]);
 
   const getPreviewStyle = () => {
@@ -2306,20 +2312,20 @@ export default function App() {
   const selectedElement = currentEdit.elements.find(e => e.id === currentEdit.selectedId);
   const zoomToPoint = (nextZoom, clientX, clientY) => {
     const clampedZoom = clamp(nextZoom, 0.5, 5);
-    const viewport = viewportRef.current;
-    if (!viewport) {
+    const overlay = overlayRef.current;
+    if (!overlay) {
       setZoom(clampedZoom);
       if (clampedZoom <= 1) setPan({ x: 0, y: 0 });
       return;
     }
-    const rect = viewport.getBoundingClientRect();
-    const pointX = clientX - rect.left;
-    const pointY = clientY - rect.top;
-    const worldX = (pointX - pan.x) / zoom;
-    const worldY = (pointY - pan.y) / zoom;
+    const overlayRect = overlay.getBoundingClientRect();
+    const baseLeft = overlayRect.left - pan.x;
+    const baseTop = overlayRect.top - pan.y;
+    const worldX = (clientX - overlayRect.left) / zoom;
+    const worldY = (clientY - overlayRect.top) / zoom;
     const nextPan = {
-      x: pointX - worldX * clampedZoom,
-      y: pointY - worldY * clampedZoom
+      x: clientX - baseLeft - worldX * clampedZoom,
+      y: clientY - baseTop - worldY * clampedZoom
     };
     setZoom(clampedZoom);
     setPan(nextPan);
@@ -2352,6 +2358,11 @@ export default function App() {
     setZoom(clampedZoom);
     setPan(newPan);
   };
+  const fitCanvas = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    showHud('Відео вписано в робочу область');
+  };
   const segmentTotal = useMemo(
     () => (activeSegments.length > 0 ? getSegmentTotal(activeSegments) : 0),
     [activeSegments]
@@ -2367,16 +2378,12 @@ export default function App() {
       : 600;
   const focusHeightPx = `${focusHeightValue}px`;
   const focusVideoMaxHeight = `${Math.max(240, focusHeightValue - 64)}px`;
-  const viewportHeightClass = isFocusMode
-    ? ''
-    : isCanvasExpanded
-      ? 'lg:h-[80vh]'
-      : 'lg:h-[60vh]';
+  const viewportHeightClass = isFocusMode ? '' : 'h-full';
   const videoMaxHeight = isFocusMode
     ? focusVideoMaxHeight
     : isCanvasExpanded
-      ? 'calc(80vh - 4rem)'
-      : 'calc(60vh - 4rem)';
+      ? 'calc(100vh - 190px)'
+      : 'calc(100vh - 250px)';
   const sidebarProps = {
     isFocusMode,
     focusSideOpen,
@@ -2448,6 +2455,7 @@ export default function App() {
     onSetVideoSuffix: setVideoSuffix,
     onCopyText: copyText,
     onZoomToSelected: zoomToSelected,
+    onFitCanvas: fitCanvas,
     onToggleCanvasExpand: toggleCanvasExpand,
     onUndo: undo,
     onRedo: redo,
@@ -2479,6 +2487,8 @@ export default function App() {
     focusHeightPx,
     viewportHeightClass,
     zoom,
+    onZoomToSelected: zoomToSelected,
+    onFitCanvas: fitCanvas,
     getPreviewStyle,
     onPanStart: startPan,
     onViewportMouseEnter: handleViewportMouseEnter,
@@ -2522,7 +2532,8 @@ export default function App() {
 	    selectedCount,
 	    openFfmpegModal,
 	    openFfmpegBatchModal,
-	    toggleNotRelevant,
+    toggleNotRelevant,
+    addRect,
     addCircle,
     clearSegments,
     segmentDraft,
@@ -2620,6 +2631,7 @@ export default function App() {
         onSaveConfig={saveAdminConfig}
         onAddVideos={addVideosFromServer}
         onRunAiSegments={runAdminAiSegments}
+        onRunClipchampExport={runAdminClipchampExport}
         onRunAiSegmentsRemote={runAdminAiSegmentsRemote}
         onPingAiRemote={pingAdminAiRemote}
         onStopAi={stopAdminAi}

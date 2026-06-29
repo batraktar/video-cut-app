@@ -44,12 +44,12 @@ function PlayerTimeline({
       <div
         className={`${isFocusMode
           ? 'absolute left-6 right-6 bottom-4 z-20 bg-transparent border-transparent shadow-none'
-          : 'p-4 rounded-b-xl shadow-sm border'
+          : 'px-3 py-2 border-0'
           } ${isFocusMode
             ? ''
             : isDark
-              ? 'bg-slate-900 border-slate-800'
-              : 'bg-white border-slate-200'
+              ? 'bg-slate-900 border-slate-700'
+              : 'bg-slate-100 border-slate-300'
           }`}
       >
         {isFocusMode ? (
@@ -90,10 +90,10 @@ function PlayerTimeline({
             </div>
           </div>
         ) : (
-          <div className="flex items-center gap-4 mb-4">
+          <div className="flex items-center gap-3 mb-2">
             <button
               onClick={togglePlayback}
-              className={`w-10 h-10 rounded-full flex items-center justify-center transition shadow ${isDark ? 'bg-white text-slate-900 hover:bg-slate-200' : 'bg-slate-900 text-white hover:bg-slate-800'
+              className={`w-8 h-8 rounded flex items-center justify-center transition ${isDark ? 'bg-slate-700 text-slate-100 hover:bg-slate-600' : 'bg-slate-900 text-white hover:bg-slate-800'
                 }`}
             >
               {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
@@ -127,7 +127,7 @@ function PlayerTimeline({
           </div>
         )}
         <div
-          className={`relative h-14 rounded-lg border select-none cursor-pointer group overflow-hidden ${isFocusMode
+          className={`relative h-14 rounded border select-none cursor-pointer group overflow-hidden ${isFocusMode
             ? 'bg-black/20 border-white/20 backdrop-blur-sm'
             : isDark
               ? 'bg-slate-800 border-slate-700'

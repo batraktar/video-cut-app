@@ -1,6 +1,18 @@
-import React, { memo } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import { Select } from 'antd';
-import { CheckSquare, Film, Plus, Snowflake, Square as SquareIcon, Trash2 } from 'lucide-react';
+import {
+  CheckSquare,
+  Film,
+  PanelLeftOpen,
+  Pin,
+  PinOff,
+  Plus,
+  Snowflake,
+  Square as SquareIcon,
+  Trash2
+} from 'lucide-react';
+
+const PIN_STORAGE_KEY = 'videoCut.playlistPinned.v1';
 
 function SidebarPlaylist({
   isFocusMode,
@@ -54,6 +66,43 @@ function SidebarPlaylist({
   onDeleteSelected,
   onFileChange
 }) {
+  const [pinned, setPinned] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(PIN_STORAGE_KEY) === 'true';
+  });
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const closeTimerRef = useRef(null);
+  const panelOpen = isFocusMode || pinned || hovered || focused;
+
+  const cancelClose = () => {
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+    setHovered(true);
+  };
+
+  const scheduleClose = () => {
+    if (isFocusMode || pinned || focused) return;
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = window.setTimeout(() => setHovered(false), 380);
+  };
+
+  useEffect(() => {
+    window.localStorage.setItem(PIN_STORAGE_KEY, String(pinned));
+  }, [pinned]);
+
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+    },
+    []
+  );
+
+  const handleResizeStart = event => {
+    setPinned(true);
+    onStartResize(event);
+  };
+
   const hasSnowSegments = videoId => {
     const edit = edits?.[videoId];
     const sets = edit?.segmentSets;
@@ -75,27 +124,99 @@ function SidebarPlaylist({
       )}
       {(!isFocusMode || focusSideOpen) && (
         <div
-          className={`border-r flex flex-col flex-shrink-0 transition-colors relative ${isFocusMode
+          className={`relative shrink-0 transition-[width] duration-200 ${isFocusMode
             ? 'fixed left-0 top-0 h-full z-[9996]'
-            : 'z-20 hidden md:flex'
-            } ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}
-          style={{ width: isFocusMode ? 320 : sidebarWidth }}
+            : 'z-40 hidden h-full md:block'
+            }`}
+          style={{ width: isFocusMode ? 320 : pinned ? sidebarWidth : 56 }}
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
+          onFocusCapture={() => {
+            setFocused(true);
+            cancelClose();
+          }}
+          onBlurCapture={event => {
+            if (event.currentTarget.contains(event.relatedTarget)) return;
+            setFocused(false);
+            if (!pinned) {
+              if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+              closeTimerRef.current = window.setTimeout(() => setHovered(false), 380);
+            }
+          }}
         >
+          {!isFocusMode && !pinned && (
+            <aside
+              className={`absolute inset-0 z-30 flex w-14 flex-col items-center gap-1 border-r px-2 py-2 ${
+                isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-300 bg-white'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={cancelClose}
+                className={`relative flex h-10 w-10 items-center justify-center rounded-md transition ${
+                  panelOpen ? 'bg-indigo-500/15 text-indigo-400' : 'text-slate-400 hover:bg-slate-700/20'
+                }`}
+                title="Відео"
+              >
+                <Film className="h-4 w-4" />
+                {allCount > 0 && (
+                  <span className="absolute right-0 top-0 min-w-4 rounded-full bg-indigo-500 px-1 text-center text-[8px] font-bold text-white">
+                    {allCount > 99 ? '99+' : allCount}
+                  </span>
+                )}
+              </button>
+              {selectedCount > 0 && (
+                <div className="mt-1 rounded bg-emerald-500/15 px-1.5 py-1 text-[9px] font-bold text-emerald-400">
+                  ✓ {selectedCount}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => setPinned(true)}
+                className="mt-auto flex h-10 w-10 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-700/20"
+                title="Закріпити список"
+              >
+                <Pin className="h-4 w-4" />
+              </button>
+              <PanelLeftOpen className="h-4 w-4 text-slate-600" />
+            </aside>
+          )}
+
+          <div
+            className={`absolute bottom-0 top-0 z-20 flex flex-col border-r shadow-[18px_0_36px_rgba(0,0,0,0.28)] transition-[opacity,transform,background-color] duration-200 ${
+              isFocusMode || pinned ? 'left-0' : 'left-14'
+            } ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'} ${
+              panelOpen ? 'translate-x-0 opacity-100' : '-translate-x-2 pointer-events-none opacity-0'
+            }`}
+            style={{ width: isFocusMode ? 320 : sidebarWidth }}
+          >
           {!isFocusMode && (
             <div
               className={`absolute right-0 top-0 h-full w-1.5 cursor-col-resize ${isDark ? 'bg-slate-800/60' : 'bg-slate-100'
                 }`}
-              onMouseDown={onStartResize}
+              onMouseDown={handleResizeStart}
               title="Змінити ширину"
             />
           )}
-          <div className={`p-4 border-b ${isDark ? 'border-slate-800' : 'border-slate-100'}`}>
+          <div className={`p-3 border-b ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
             <div className="flex items-center justify-between">
               <h2 className={`font-bold flex items-center gap-2 ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>
                 <Film className="w-5 h-5 text-indigo-500" />
                 {isFocusMode && <span className="text-xs">Список</span>}
               </h2>
               <div className="flex items-center gap-2">
+                {!isFocusMode && (
+                  <button
+                    type="button"
+                    onClick={() => setPinned(value => !value)}
+                    className={`rounded p-1.5 transition ${
+                      pinned ? 'bg-indigo-500/15 text-indigo-400' : 'text-slate-400 hover:bg-slate-700/20'
+                    }`}
+                    title={pinned ? 'Відкріпити список' : 'Закріпити список'}
+                  >
+                    {pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+                  </button>
+                )}
                 {isFocusMode && (
                   <button
                     onClick={onFocusSideClose}
@@ -287,7 +408,7 @@ function SidebarPlaylist({
 	                    <div key={vid.id} style={{ height: `${playlistItemHeight}px` }}>
 	                      <div
 	                        onClick={() => switchVideo(vid.id)}
-                        className={`h-full p-3 rounded-lg cursor-pointer group relative flex items-start gap-2 transition ${currentId === vid.id
+                        className={`h-full p-2 rounded-md cursor-pointer group relative flex items-start gap-2 transition ${currentId === vid.id
                           ? isDark
                             ? 'bg-indigo-900/50 border border-indigo-700'
                             : 'bg-indigo-50 border border-indigo-200 shadow-sm'
@@ -329,7 +450,7 @@ function SidebarPlaylist({
                         </button>
                         <div className="flex-1 min-w-0">
 	                          <div
-	                            className={`font-medium text-sm truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}
+                                className={`font-medium text-xs truncate ${isDark ? 'text-slate-200' : 'text-slate-700'}`}
 	                            title={getVideoTooltip(vid)}
 	                          >
                             {getDisplayName(vid.name)}
@@ -384,7 +505,7 @@ function SidebarPlaylist({
           </div>
 
           <div
-            className={`p-4 border-t space-y-3 ${isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
+            className={`p-3 border-t space-y-2 ${isDark ? 'bg-slate-800 border-slate-700' : 'bg-slate-50 border-slate-200'
               }`}
           >
             {playlist.length > 0 && (
@@ -397,11 +518,12 @@ function SidebarPlaylist({
               </button>
             )}
           </div>
-          <div className={`p-4 border-t ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
+          <div className={`p-3 border-t ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-200'}`}>
             <label className="flex items-center justify-center gap-2 cursor-pointer bg-indigo-600 hover:bg-indigo-700 text-white w-full py-2.5 rounded-lg transition font-medium shadow-sm text-sm">
               <Plus className="w-4 h-4" /> Додати відео
               <input type="file" accept="video/*" multiple onChange={onFileChange} className="hidden" />
             </label>
+          </div>
           </div>
         </div>
       )}

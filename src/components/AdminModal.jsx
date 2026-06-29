@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Layers, Save } from 'lucide-react';
+import { CloudUpload, Layers, Save } from 'lucide-react';
 import { SEGMENT_MODES } from '../lib/editorConstants';
 
 export default function AdminModal({
@@ -44,6 +44,7 @@ export default function AdminModal({
   onSaveConfig,
   onAddVideos,
   onRunAiSegments,
+  onRunClipchampExport,
   onRunAiSegmentsRemote,
   onPingAiRemote,
   onStopAi,
@@ -59,7 +60,6 @@ export default function AdminModal({
   onToggleAutoSync,
   onRunLogo
 }) {
-  if (!open) return null;
   const overlayRef = useRef(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedModes, setSelectedModes] = useState([]);
@@ -68,21 +68,27 @@ export default function AdminModal({
   const [pickerError, setPickerError] = useState('');
 
   useEffect(() => {
+    if (!open) return;
     const handleKey = e => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  }, [open, onClose]);
 
   useEffect(() => {
     if (!open) return;
     if (!importPickerRequest) return;
     if (importPickerRequest <= importPickerHandled) return;
-    onLoadSheet?.();
-    setPickerOpen(true);
-    onImportPickerHandled?.(importPickerRequest);
+    const timer = window.setTimeout(() => {
+      onLoadSheet?.();
+      setPickerOpen(true);
+      onImportPickerHandled?.(importPickerRequest);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [open, importPickerRequest, importPickerHandled, onLoadSheet, onImportPickerHandled]);
+
+  if (!open) return null;
 
   const handleOverlayMouseDown = e => {
     if (e.target === overlayRef.current) onClose();
@@ -266,7 +272,12 @@ export default function AdminModal({
             {adminImportStats && (
               <div className="mt-2 p-2 rounded bg-slate-100/10 border border-slate-200/10">
                 <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px]">
-                  <span className="text-slate-400">Всього: <b className="text-slate-200">{adminImportStats.total}</b></span>
+                  <span className="text-slate-400">
+                    Всього:{' '}
+                    <b className={isDark ? 'text-slate-200' : 'text-slate-700'}>
+                      {adminImportStats.total ?? 0}
+                    </b>
+                  </span>
                   <span className="text-emerald-400">Додано: <b>{adminImportStats.added}</b></span>
                   <span className="text-sky-400">В таблиці: <b>{adminImportStats.inSheet}</b></span>
                   <span className="text-amber-400">Фільтр: <b>{adminImportStats.filteredOut || 0}</b></span>
@@ -284,6 +295,82 @@ export default function AdminModal({
                 )}
               </div>
             )}
+          </div>
+        </div>
+
+        <div className={`mt-4 rounded-lg border p-3 ${isDark ? 'border-sky-900/70 bg-sky-950/30' : 'border-sky-200 bg-sky-50'}`}>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-xs font-bold">
+                <CloudUpload className="h-4 w-4 text-sky-500" />
+                Clipchamp Drive export
+              </div>
+              <div className="mt-1 text-[10px] text-slate-400">
+                Створює нову датовану теку, рендерить відео із суфіксами та додає links_map.csv і логи.
+              </div>
+            </div>
+            <span className="shrink-0 text-[10px] text-slate-400">
+              {selectedCount > 0
+                ? `Обрано: ${selectedCount}`
+                : activeVideo
+                  ? 'Поточне відео'
+                  : 'Нічого не обрано'}
+            </span>
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-5">
+            <label className="flex flex-col gap-1 text-[10px] text-slate-400">
+              Rclone remote
+              <input
+                type="text"
+                value={adminConfig.clipchampDriveRemote || ''}
+                onChange={e =>
+                  onConfigChange(prev => ({ ...prev, clipchampDriveRemote: e.target.value }))
+                }
+                className={`w-full rounded border p-2 text-xs ${isDark ? 'border-slate-700 bg-slate-800 text-slate-200' : 'border-slate-200 bg-white text-slate-800'}`}
+                placeholder="lqd-kotyk-helper"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[10px] text-slate-400 md:col-span-2">
+              Google Drive Folder URL або ID
+              <input
+                type="text"
+                value={adminConfig.clipchampDriveFolderId || ''}
+                onChange={e =>
+                  onConfigChange(prev => ({ ...prev, clipchampDriveFolderId: e.target.value }))
+                }
+                className={`w-full rounded border p-2 text-xs ${isDark ? 'border-slate-700 bg-slate-800 text-slate-200' : 'border-slate-200 bg-white text-slate-800'}`}
+                placeholder="1_bNIOZBZfbHQU9oEC2e_5Xqu5lSC4D2H"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[10px] text-slate-400">
+              Префікс нової теки
+              <input
+                type="text"
+                value={adminConfig.clipchampFolderPrefix || ''}
+                onChange={e =>
+                  onConfigChange(prev => ({ ...prev, clipchampFolderPrefix: e.target.value }))
+                }
+                className={`w-full rounded border p-2 text-xs ${isDark ? 'border-slate-700 bg-slate-800 text-slate-200' : 'border-slate-200 bg-white text-slate-800'}`}
+                placeholder="Clipchamp"
+              />
+            </label>
+            <button
+              onClick={onRunClipchampExport}
+              disabled={adminLoading || (selectedCount === 0 && !activeVideo)}
+              className="self-end rounded bg-sky-600 px-3 py-2 text-xs font-bold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Вивантажити
+            </button>
+          </div>
+          <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-400">
+            <span>Тека: Clipchamp_YYYY-MM-DD_HH-mm-ss</span>
+            <button
+              onClick={onSaveConfig}
+              disabled={adminLoading}
+              className="rounded border border-slate-500/40 px-2 py-1 font-bold hover:border-slate-400"
+            >
+              Зберегти налаштування
+            </button>
           </div>
         </div>
 
@@ -412,22 +499,30 @@ export default function AdminModal({
               />
             </div>
             <div className="mt-2 grid gap-2 md:grid-cols-4">
-              <input
-                type="number"
-                step="0.1"
-                value={Number.isFinite(adminConfig.aiFps) ? adminConfig.aiFps : ''}
-                onChange={e => onConfigChange(prev => ({ ...prev, aiFps: parseNumericInput(e.target.value) }))}
-                className={`w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-white border-slate-200'}`}
-                placeholder="FPS"
-              />
-              <input
-                type="number"
-                step="0.1"
-                value={Number.isFinite(adminConfig.aiMinDuration) ? adminConfig.aiMinDuration : ''}
-                onChange={e => onConfigChange(prev => ({ ...prev, aiMinDuration: parseNumericInput(e.target.value) }))}
-                className={`w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-white border-slate-200'}`}
-                placeholder="Min duration"
-              />
+              <label className="flex flex-col gap-1 text-[10px] text-slate-400">
+                Кадрів на секунду (FPS)
+                <input
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={Number.isFinite(adminConfig.aiFps) ? adminConfig.aiFps : ''}
+                  onChange={e => onConfigChange(prev => ({ ...prev, aiFps: parseNumericInput(e.target.value) }))}
+                  className={`w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-white border-slate-200 text-slate-800'}`}
+                  placeholder="1"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[10px] text-slate-400">
+                Мінімальний сегмент, секунд
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={Number.isFinite(adminConfig.aiMinDuration) ? adminConfig.aiMinDuration : ''}
+                  onChange={e => onConfigChange(prev => ({ ...prev, aiMinDuration: parseNumericInput(e.target.value) }))}
+                  className={`w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-white border-slate-200 text-slate-800'}`}
+                  placeholder="2"
+                />
+              </label>
               <button
                 onClick={onSaveConfig}
                 className="px-3 py-2 rounded text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white"
@@ -461,7 +556,8 @@ export default function AdminModal({
               </button>
             </div>
             <div className="mt-1 text-[10px] text-slate-400">
-              AI запускає класифікацію кадрів і одразу заповнює сегменти в плеєрі.
+              1 FPS = аналіз одного кадру щосекунди. Результати надходять по одному відео:
+              готові сегменти одразу з’являються в редакторі, а черга працює далі у фоні.
             </div>
             {adminAiStats && (
               <div className="mt-1 text-[10px] text-slate-400">
@@ -518,9 +614,10 @@ export default function AdminModal({
                 </div>
                 <div className="mt-2 max-h-28 overflow-auto text-[10px] text-slate-400">
                   {aiQueue.map(item => (
-                    <div key={item.id} className="flex items-center justify-between gap-2">
-                      <span className="truncate">{item.name}</span>
-                      <span
+                    <div key={item.id} className="border-b border-slate-500/10 py-1 last:border-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate">{item.name}</span>
+                        <span
                         className={`shrink-0 ${
                           item.status === 'done'
                             ? 'text-emerald-400'
@@ -530,15 +627,30 @@ export default function AdminModal({
                                 ? 'text-rose-400'
                                 : 'text-slate-400'
                         }`}
-                      >
-                        {item.status === 'done'
-                          ? 'готово'
+                        >
+                          {item.status === 'done'
+                          ? `готово${Number.isFinite(item.segmentCount) ? ` • ${item.segmentCount} сегм.` : ''}`
                           : item.status === 'running'
                             ? 'в роботі'
                             : item.status === 'error'
-                              ? 'помилка'
-                              : 'очікує'}
-                      </span>
+                              ? item.error === 'no_segments'
+                                ? item.provider === 'colab'
+                                  ? 'Colab: порожній result'
+                                  : '0 сегментів'
+                                : 'помилка'
+                                : 'очікує'}
+                        </span>
+                      </div>
+                      {item.taskId && (
+                        <div className="truncate font-mono text-[9px] text-slate-500">
+                          {item.taskId}
+                        </div>
+                      )}
+                      {item.errorDetail && (
+                        <div className="mt-0.5 break-words text-[9px] leading-3 text-rose-300">
+                          {item.errorDetail}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

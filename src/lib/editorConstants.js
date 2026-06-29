@@ -16,6 +16,9 @@ export const DEFAULT_ADMIN_CONFIG = {
   logoMaxMatches: 5,
   logoMaxGap: 0.5,
   logoScales: '0.9,1.0,1.1',
+  clipchampDriveRemote: 'lqd-kotyk-helper',
+  clipchampDriveFolderId: '1_bNIOZBZfbHQU9oEC2e_5Xqu5lSC4D2H',
+  clipchampFolderPrefix: 'Clipchamp',
   sheetId: DEFAULT_SHEET_ID,
   sheetGid: DEFAULT_SHEET_GID
 };
@@ -93,5 +96,6 @@ export const SEGMENT_MODES = [
   }
 ];
 
-export const RCLONE_REMOTE = 'gdrive';
+export const RCLONE_REMOTE = 'lqd-kotyk-helper';
 export const RCLONE_FOLDER = '22.12.2025 [ATV&Drone]';
+export const RCLONE_FLAGS = '--drive-shared-with-me';

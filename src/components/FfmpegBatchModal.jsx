@@ -19,7 +19,7 @@ export default function FfmpegBatchModal({
           Запускайте у теці з відео. Вивід буде у `cutted/` без `_done`, а оригінали після
           успішного експорту отримають `_done` і переїдуть в `done/` (якщо є thermal —
           `_done` ставиться на thermal, інакше на analog). За потреби файли підуть у
-          Google Drive через `rclone` (`gdrive:22.12.2025 [ATV&Drone]`).
+          Google Drive через `rclone` (`lqd-kotyk-helper:22.12.2025 [ATV&Drone]`).
         </div>
         {hasSkipped && (
           <div className="text-[10px] text-amber-500 mb-2">

@@ -1,4 +1,7 @@
+import { useState } from 'react';
+import CanvasTools from './CanvasTools';
 import EmptyState from './EmptyState';
+import InspectorDrawer from './InspectorDrawer';
 import PlayerTimeline from './PlayerTimeline';
 import PlayerViewport from './PlayerViewport';
 import PropertiesPanel from './PropertiesPanel';
@@ -11,6 +14,8 @@ export default function WorkspaceArea({
   focusHeightPx,
   viewportHeightClass,
   zoom,
+  onZoomToSelected,
+  onFitCanvas,
   getPreviewStyle,
   onPanStart,
   onViewportMouseEnter,
@@ -55,6 +60,7 @@ export default function WorkspaceArea({
   openFfmpegModal,
   openFfmpegBatchModal,
   toggleNotRelevant,
+  addRect,
   addCircle,
   clearSegments,
   segmentDraft,
@@ -82,15 +88,30 @@ export default function WorkspaceArea({
   snowSpeed,
   setSnowSpeed
 }) {
+  const [canvasTool, setCanvasTool] = useState('select');
+
   if (!activeVideo) {
     return <EmptyState onFileChange={onFileChange} />;
   }
 
   return (
-    <div className="flex-1 flex flex-col lg:flex-row h-full overflow-hidden">
-      {/* LEFT: PLAYER */}
-      <div className="flex-1 flex flex-col p-4 lg:p-6 min-w-0 overflow-hidden relative">
-        <PlayerViewport
+    <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-slate-800">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {!isFocusMode && (
+          <CanvasTools
+            tool={canvasTool}
+            zoom={zoom}
+            onToolChange={setCanvasTool}
+            onFit={onFitCanvas}
+            onZoomIn={() => onZoomToSelected(zoom + 0.1)}
+            onZoomOut={() => onZoomToSelected(zoom - 0.1)}
+            onAddRect={addRect}
+            onAddCircle={addCircle}
+          />
+        )}
+
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#202124]">
+          <PlayerViewport
           viewportRef={viewportRef}
           overlayRef={overlayRef}
           videoRef={videoRef}
@@ -100,7 +121,7 @@ export default function WorkspaceArea({
           viewportHeightClass={viewportHeightClass}
           zoom={zoom}
           getPreviewStyle={getPreviewStyle}
-          onPanStart={onPanStart}
+          onPanStart={event => onPanStart(event, canvasTool === 'pan')}
           onViewportMouseEnter={onViewportMouseEnter}
           onViewportMouseLeave={onViewportMouseLeave}
           activeVideo={activeVideo}
@@ -111,11 +132,65 @@ export default function WorkspaceArea({
           currentId={currentId}
           videoMaxHeight={videoMaxHeight}
           onMetadata={onMetadata}
-          onDragStart={onDragStart}
+          onDragStart={
+            canvasTool === 'pan'
+              ? event => onPanStart(event, true)
+              : onDragStart
+          }
           onSelectElement={onSelectElement}
           onFocusResizeStart={onFocusResizeStart}
           visibleElements={visibleElements}
+          canvasTool={canvasTool}
         />
+        </main>
+
+        {!isFocusMode && (
+          <InspectorDrawer isDark={isDark} segmentCount={activeSegments.length}>
+	          <PropertiesPanel
+	          isDark={isDark}
+	          activeVideo={activeVideo}
+            selectedCount={selectedCount}
+            openFfmpegModal={openFfmpegModal}
+            openFfmpegBatchModal={openFfmpegBatchModal}
+            toggleNotRelevant={toggleNotRelevant}
+            addRect={addRect}
+            addCircle={addCircle}
+            clearSegments={clearSegments}
+            activeSegments={activeSegments}
+            activeSegmentModesMeta={activeSegmentModesMeta}
+            activeSegmentMode={activeSegmentMode}
+            setActiveSegmentMode={onSetActiveSegmentMode}
+            segmentDraft={segmentDraft}
+            setSegmentDraft={setSegmentDraft}
+            currentTime={currentTime}
+            parseNumericInput={parseNumericInput}
+            segmentStartRef={segmentStartRef}
+            segmentEndRef={segmentEndRef}
+            addSegmentFromDraft={addSegmentFromDraft}
+            updateSegment={updateSegment}
+            moveSegment={moveSegment}
+            removeSegment={removeSegment}
+            activeSegmentId={activeSegmentId}
+            setActiveSegmentId={setActiveSegmentId}
+            onCycleSegmentChannel={onCycleSegmentChannel}
+            selectedElement={selectedElement}
+            duplicateElement={duplicateElement}
+            copyAttributes={copyAttributes}
+            pasteAttributes={pasteAttributes}
+	          copiedAttributes={copiedAttributes}
+	          deleteElement={deleteElement}
+	          updateElement={updateElement}
+	          hotkeys={hotkeys}
+	          setHotkeys={setHotkeys}
+	          hotkeyCaptureRef={hotkeyCaptureRef}
+	          snowSpeed={snowSpeed}
+	          setSnowSpeed={setSnowSpeed}
+	          />
+	        </InspectorDrawer>
+	      )}
+      </div>
+
+      <div className={isFocusMode ? '' : 'shrink-0 border-t border-slate-700'}>
         <PlayerTimeline
           isFocusMode={isFocusMode}
           isDark={isDark}
@@ -153,49 +228,6 @@ export default function WorkspaceArea({
           onCycleSegmentChannel={onCycleSegmentChannel}
         />
       </div>
-
-      {/* RIGHT: PROPERTIES */}
-      {!isFocusMode && (
-	        <PropertiesPanel
-	          isDark={isDark}
-	          activeVideo={activeVideo}
-          selectedCount={selectedCount}
-          openFfmpegModal={openFfmpegModal}
-          openFfmpegBatchModal={openFfmpegBatchModal}
-          toggleNotRelevant={toggleNotRelevant}
-          addCircle={addCircle}
-          clearSegments={clearSegments}
-          activeSegments={activeSegments}
-          activeSegmentModesMeta={activeSegmentModesMeta}
-          activeSegmentMode={activeSegmentMode}
-          setActiveSegmentMode={onSetActiveSegmentMode}
-          segmentDraft={segmentDraft}
-          setSegmentDraft={setSegmentDraft}
-          currentTime={currentTime}
-          parseNumericInput={parseNumericInput}
-          segmentStartRef={segmentStartRef}
-          segmentEndRef={segmentEndRef}
-          addSegmentFromDraft={addSegmentFromDraft}
-          updateSegment={updateSegment}
-          moveSegment={moveSegment}
-          removeSegment={removeSegment}
-          activeSegmentId={activeSegmentId}
-          setActiveSegmentId={setActiveSegmentId}
-          onCycleSegmentChannel={onCycleSegmentChannel}
-          selectedElement={selectedElement}
-          duplicateElement={duplicateElement}
-          copyAttributes={copyAttributes}
-          pasteAttributes={pasteAttributes}
-	          copiedAttributes={copiedAttributes}
-	          deleteElement={deleteElement}
-	          updateElement={updateElement}
-	          hotkeys={hotkeys}
-	          setHotkeys={setHotkeys}
-	          hotkeyCaptureRef={hotkeyCaptureRef}
-	          snowSpeed={snowSpeed}
-	          setSnowSpeed={setSnowSpeed}
-	        />
-	      )}
 	    </div>
 	  );
 }

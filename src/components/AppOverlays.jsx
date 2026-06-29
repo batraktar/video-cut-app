@@ -63,6 +63,7 @@ export default function AppOverlays({
   onSaveConfig,
   onAddVideos,
   onRunAiSegments,
+  onRunClipchampExport,
   onRunAiSegmentsRemote,
   onPingAiRemote,
   onStopAi,
@@ -151,6 +152,7 @@ export default function AppOverlays({
         onSaveConfig={onSaveConfig}
         onAddVideos={onAddVideos}
         onRunAiSegments={onRunAiSegments}
+        onRunClipchampExport={onRunClipchampExport}
         onRunAiSegmentsRemote={onRunAiSegmentsRemote}
         onPingAiRemote={onPingAiRemote}
         onStopAi={onStopAi}

@@ -36,6 +36,7 @@ export default function TopBar({
   onSetVideoSuffix,
   onCopyText,
   onZoomToSelected,
+  onFitCanvas,
   onToggleCanvasExpand,
   onUndo,
   onRedo,
@@ -72,20 +73,20 @@ export default function TopBar({
 
   return (
     <div
-      className={`${isFocusMode ? 'h-12' : 'h-16'} border-b flex items-center justify-between px-6 flex-shrink-0 ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'
+      className={`${isFocusMode ? 'h-12' : 'h-14'} border-b flex items-center justify-between px-3 flex-shrink-0 gap-3 ${isDark ? 'bg-slate-900 border-slate-700' : 'bg-white border-slate-300'
         }`}
     >
       {!isFocusMode && (
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3 overflow-hidden">
           <div className="flex items-center gap-2">
             <div className="bg-indigo-500 p-1.5 rounded-lg text-white">
               <Scissors className="w-5 h-5" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h1
                   onClick={() => onCopyVideoName(activeVideo?.name, activeVideo?.id)}
-                  className={`font-bold text-lg leading-tight cursor-pointer select-none ${isDark ? 'text-slate-100 hover:text-emerald-300' : 'text-slate-800 hover:text-emerald-600'
+                  className={`max-w-[34vw] truncate font-bold text-sm leading-tight cursor-pointer select-none ${isDark ? 'text-slate-100 hover:text-emerald-300' : 'text-slate-800 hover:text-emerald-600'
                     }`}
                   title="Натисніть, щоб скопіювати назву"
                 >
@@ -163,7 +164,7 @@ export default function TopBar({
           </div>
         </div>
       )}
-      <div className="flex items-center gap-4">
+      <div className="flex shrink-0 items-center gap-2">
         {activeVideo && (
           <>
             <div className="flex items-center border rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-800 dark:border-slate-700">
@@ -185,9 +186,7 @@ export default function TopBar({
                 <ZoomIn className="w-4 h-4 text-slate-600 dark:text-slate-300" />
               </button>
               <button
-                onClick={() => {
-                  onZoomToSelected(1);
-                }}
+                onClick={onFitCanvas}
                 className="p-1.5 border-l border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
                 title="Скинути зум"
               >
