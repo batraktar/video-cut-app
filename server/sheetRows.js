@@ -27,6 +27,19 @@ export const normalizeTelegramLink = value => {
   }
 };
 
+export const resolveSheetRangeByGid = (sheets, sheetGid, fallbackRange) => {
+  const gid = Number.parseInt(String(sheetGid ?? ''), 10);
+  if (!Number.isInteger(gid)) return fallbackRange;
+
+  const matchingSheet = (Array.isArray(sheets) ? sheets : []).find(
+    sheet => sheet?.properties?.sheetId === gid
+  );
+  const title = String(matchingSheet?.properties?.title ?? '').trim();
+  if (!title) return fallbackRange;
+
+  return `'${title.replaceAll("'", "''")}'!A:K`;
+};
+
 export const buildSheetRows = rows => {
   if (!Array.isArray(rows) || rows.length === 0) return [];
   const headers = rows[0].map(normalizeSheetHeader);
@@ -65,9 +78,53 @@ export const buildLinkFilenameMap = rows => {
   for (const row of Array.isArray(rows) ? rows : []) {
     const link = normalizeTelegramLink(row?.link);
     const fileName = String(row?.filename ?? '').trim();
-    if (link && fileName && !map.has(link)) map.set(link, fileName);
+    if (link && fileName) map.set(link, fileName);
   }
   return map;
+};
+
+export const buildTelegramSheetSyncPlan = (parseValues, preFinalValues, mapRows) => {
+  const parseRows = new Map();
+  for (let index = 1; index < (parseValues || []).length; index += 1) {
+    const link = getCell(parseValues[index], 0);
+    const key = normalizeTelegramLink(link);
+    if (key) {
+      parseRows.set(key, {
+        link,
+        filename: getCell(parseValues[index], 1),
+        rowIndex: index + 1
+      });
+    }
+  }
+
+  const latestCsvRows = new Map();
+  for (const row of Array.isArray(mapRows) ? mapRows : []) {
+    const link = String(row?.link ?? '').trim();
+    const filename = String(row?.filename ?? '').trim();
+    const key = normalizeTelegramLink(link);
+    if (key && link && filename) latestCsvRows.set(key, { link, filename });
+  }
+
+  const parseUpdates = [];
+  const parseAppends = [];
+  for (const [key, csvRow] of latestCsvRows) {
+    const existing = parseRows.get(key);
+    if (existing) {
+      if (existing.filename !== csvRow.filename) {
+        parseUpdates.push({ rowIndex: existing.rowIndex, filename: csvRow.filename });
+      }
+    } else {
+      parseAppends.push([csvRow.link, csvRow.filename]);
+    }
+    parseRows.set(key, { ...csvRow, rowIndex: existing?.rowIndex });
+  }
+
+  const preFinalNames = (preFinalValues || []).slice(1).map(row => {
+    const key = normalizeTelegramLink(getCell(row, 0));
+    return [parseRows.get(key)?.filename || ''];
+  });
+
+  return { parseUpdates, parseAppends, preFinalNames };
 };
 
 export const resolveSheetFilenames = (rows, linkFilenameMap) => {

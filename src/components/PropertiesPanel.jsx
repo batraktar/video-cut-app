@@ -1,4 +1,4 @@
-import React, { memo, useMemo } from 'react';
+import React, { memo, useMemo, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -20,6 +20,69 @@ import HotkeysSettings from './HotkeysSettings';
 import SnowSettings from './SnowSettings';
 import { formatHotkeyList, normalizeHotkeys } from '../features/editor/hotkeys';
 
+function SegmentTimeInput({ value, onCommit, className, onFocus }) {
+  const [draft, setDraft] = useState(value.toFixed(3));
+
+  const commit = () => {
+    const parsed = Number(draft.replace(',', '.'));
+    if (Number.isFinite(parsed)) {
+      onCommit(parsed);
+      setDraft(parsed.toFixed(3));
+    } else {
+      setDraft(value.toFixed(3));
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={draft}
+      onChange={e => setDraft(e.target.value)}
+      onFocus={() => {
+        onFocus?.();
+      }}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') e.currentTarget.blur();
+      }}
+      className={className}
+    />
+  );
+}
+
+function SegmentDraftInput({ value, onCommit, inputRef, className, placeholder }) {
+  const [draft, setDraft] = useState(Number.isFinite(value) ? value.toFixed(3) : '');
+
+  const commit = () => {
+    const normalized = draft.replace(',', '.').trim();
+    const parsed = normalized === '' ? null : Number(normalized);
+    if (parsed === null || Number.isFinite(parsed)) {
+      onCommit(parsed);
+      setDraft(parsed === null ? '' : parsed.toFixed(3));
+    } else {
+      setDraft(Number.isFinite(value) ? value.toFixed(3) : '');
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={draft}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') e.currentTarget.blur();
+      }}
+      data-segment-input="true"
+      ref={inputRef}
+      className={className}
+      placeholder={placeholder}
+    />
+  );
+}
+
 function PropertiesPanel({
   isDark,
   activeVideo,
@@ -37,7 +100,6 @@ function PropertiesPanel({
   segmentDraft,
   setSegmentDraft,
   currentTime,
-  parseNumericInput,
   segmentStartRef,
   segmentEndRef,
   addSegmentFromDraft,
@@ -161,20 +223,12 @@ function PropertiesPanel({
                 <Target className="w-3 h-3" /> M
               </button>
             </div>
-            <input
-              type="number"
-              step="0.1"
-              value={Number.isFinite(segmentDraft.start) ? segmentDraft.start.toFixed(3) : ''}
-              onChange={e =>
-                setSegmentDraft(prev => ({
-                  ...prev,
-                  start: e.target.value === '' ? null : parseNumericInput(e.target.value)
-                }))
-              }
-              data-segment-input="true"
-              ref={segmentStartRef}
-              className={`w-full text-xs p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'
-                }`}
+            <SegmentDraftInput
+              key={segmentDraft.start ?? 'start-empty'}
+              value={segmentDraft.start}
+              onCommit={start => setSegmentDraft(prev => ({ ...prev, start }))}
+              inputRef={segmentStartRef}
+              className={`w-full text-xs p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'}`}
               placeholder="0.0"
             />
           </div>
@@ -190,20 +244,12 @@ function PropertiesPanel({
                 <Target className="w-3 h-3" /> /
               </button>
             </div>
-            <input
-              type="number"
-              step="0.1"
-              value={Number.isFinite(segmentDraft.end) ? segmentDraft.end.toFixed(3) : ''}
-              onChange={e =>
-                setSegmentDraft(prev => ({
-                  ...prev,
-                  end: e.target.value === '' ? null : parseNumericInput(e.target.value)
-                }))
-              }
-              data-segment-input="true"
-              ref={segmentEndRef}
-              className={`w-full text-xs p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'
-                }`}
+            <SegmentDraftInput
+              key={segmentDraft.end ?? 'end-empty'}
+              value={segmentDraft.end}
+              onCommit={end => setSegmentDraft(prev => ({ ...prev, end }))}
+              inputRef={segmentEndRef}
+              className={`w-full text-xs p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'}`}
               placeholder="0.0"
             />
           </div>
@@ -229,31 +275,20 @@ function PropertiesPanel({
               }}
             >
               <div className="text-slate-400 w-7 text-right">{idx + 1}</div>
-              <input
-                type="number"
-                step="0.1"
-                value={seg.start.toFixed(3)}
-                onChange={e => {
-                  const next = parseNumericInput(e.target.value);
-                  if (!Number.isFinite(next)) return;
-                  updateSegment(seg.id, { start: next });
-                }}
+              <SegmentTimeInput
+                key={`${seg.id}-start-${seg.start}`}
+                value={seg.start}
+                onCommit={start => updateSegment(seg.id, { start })}
                 onFocus={() => setActiveSegmentId?.(seg.id)}
-                className={`w-16 p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'
-                  }`}
+                className={`w-16 p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'}`}
               />
               <span className="text-slate-400">-</span>
-              <input
-                step="0.1"
-                value={seg.end.toFixed(3)}
-                onChange={e => {
-                  const next = parseNumericInput(e.target.value);
-                  if (!Number.isFinite(next)) return;
-                  updateSegment(seg.id, { end: next });
-                }}
+              <SegmentTimeInput
+                key={`${seg.id}-end-${seg.end}`}
+                value={seg.end}
+                onCommit={end => updateSegment(seg.id, { end })}
                 onFocus={() => setActiveSegmentId?.(seg.id)}
-                className={`w-16 p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'
-                  }`}
+                className={`w-16 p-1 rounded border ${isDark ? 'bg-slate-700 border-slate-600 text-white' : 'border-slate-300'}`}
               />
               <button
                 onClick={() => updateSegment(seg.id, { isSnow: !seg.isSnow })}

@@ -35,7 +35,7 @@ export const loadFromStorage = (key, fallback) => {
   try {
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : fallback;
-  } catch (e) {
+  } catch {
     return fallback;
   }
 };
@@ -44,7 +44,9 @@ export const saveToStorage = (key, value) => {
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(key, JSON.stringify(value));
-  } catch (e) { }
+  } catch {
+    return;
+  }
 };
 
 export const parseNumericInput = value => {
@@ -298,8 +300,11 @@ export const mergeChannelLists = (base, incoming) => {
   return sortChannels(Array.from(next.values()));
 };
 
-export const getServerFileKey = (baseDir, relativePath, size, mtimeMs) =>
-  `server:${baseDir}|${relativePath}|${size}|${mtimeMs}`;
+export const resolveImportSuffix = (existingSuffix, channels) =>
+  existingSuffix || channels?.[0]?.suffix || '_crop_digital';
+
+export const getServerFileKey = (baseDir, relativePath) =>
+  `server:${baseDir}|${relativePath}`;
 
 export const getSegmentOffsetForTime = (time, segments) => {
   let offset = 0;

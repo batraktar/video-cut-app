@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import json
 import logging
 import os
 import queue
@@ -33,13 +34,32 @@ from telethon.errors import (
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 BASE_DIR = APP_DIR / "Telegram Uploads"
 SESSION_FILE = APP_DIR / "telegram_session"
+API_CONFIG_FILE = APP_DIR / "telegram_api.json"
 LINK_PATTERN = re.compile(r"https?://t\.me/(?:s/)?(c/)?([A-Za-z0-9_]+)/([0-9]+)")
 GLOBAL_MAP_MD = BASE_DIR / "links_map.md"
 GLOBAL_MAP_CSV = BASE_DIR / "links_map.csv"
 GLOBAL_MAP_XLSX = BASE_DIR / "links_map.xlsx"
 
-DEFAULT_API_ID = os.getenv("TELEGRAM_API_ID", "")
-DEFAULT_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+def load_api_credentials() -> Tuple[str, str]:
+    try:
+        saved = json.loads(API_CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        saved = {}
+    api_id = saved.get("api_id", "") if isinstance(saved, dict) else ""
+    api_hash = saved.get("api_hash", "") if isinstance(saved, dict) else ""
+    return str(api_id), str(api_hash)
+
+
+def save_api_credentials(api_id: str, api_hash: str) -> None:
+    descriptor = os.open(API_CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as config_file:
+        os.chmod(API_CONFIG_FILE, 0o600)
+        json.dump({"api_id": api_id, "api_hash": api_hash}, config_file)
+
+
+SAVED_API_ID, SAVED_API_HASH = load_api_credentials()
+DEFAULT_API_ID = os.getenv("TELEGRAM_API_ID", SAVED_API_ID)
+DEFAULT_API_HASH = os.getenv("TELEGRAM_API_HASH", SAVED_API_HASH)
 
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("telethon").setLevel(logging.ERROR)
@@ -225,11 +245,13 @@ class TelegramBatchDownloader(ctk.CTk):
         self.api_id_entry = ctk.CTkEntry(settings)
         self.api_id_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
         self.api_id_entry.insert(0, DEFAULT_API_ID)
+        self.api_id_entry.bind("<FocusOut>", self._save_api_credentials)
 
         ctk.CTkLabel(settings, text="API_HASH").grid(row=0, column=2, padx=10, pady=10, sticky="w")
         self.api_hash_entry = ctk.CTkEntry(settings)
         self.api_hash_entry.grid(row=0, column=3, padx=10, pady=10, sticky="ew")
         self.api_hash_entry.insert(0, DEFAULT_API_HASH)
+        self.api_hash_entry.bind("<FocusOut>", self._save_api_credentials)
 
         ctk.CTkLabel(settings, text="Паралельно").grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
         self.parallel_entry = ctk.CTkEntry(settings, width=80)
@@ -300,6 +322,11 @@ class TelegramBatchDownloader(ctk.CTk):
             return
 
         api_id = int(api_id_raw)
+        try:
+            save_api_credentials(api_id_raw, api_hash)
+        except OSError as error:
+            self._append_log(f"[ERR] Не вдалося зберегти API-дані: {error}")
+            return
         max_parallel = int(parallel_raw)
         if max_parallel > 10:
             max_parallel = 10
@@ -326,6 +353,15 @@ class TelegramBatchDownloader(ctk.CTk):
             daemon=True,
         )
         self._worker.start()
+
+    def _save_api_credentials(self, _event=None) -> None:
+        api_id = self.api_id_entry.get().strip()
+        api_hash = self.api_hash_entry.get().strip()
+        if api_id.isdigit() and api_hash:
+            try:
+                save_api_credentials(api_id, api_hash)
+            except OSError as error:
+                self._append_log(f"[ERR] Не вдалося зберегти API-дані: {error}")
 
     def _on_pause(self) -> None:
         if not self._running:

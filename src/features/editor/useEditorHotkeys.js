@@ -4,6 +4,14 @@ import { normalizeName } from '../../lib/editorUtils';
 import { getSegmentModeForVideo } from './videoMeta';
 import { eventMatchesAction } from './hotkeys';
 
+const isEditableTarget = target => {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+  );
+};
+
 export default function useEditorHotkeys(params) {
   const paramsRef = useRef(params);
   const lastSeekHudRef = useRef(0);
@@ -64,6 +72,26 @@ export default function useEditorHotkeys(params) {
       }
       if (altDownRef.current) altUsedWithOtherRef.current = true;
       if (!activeVideo || (isProcessing && processingJob?.videoId === currentId)) return;
+      const isEditable = isEditableTarget(e.target);
+
+      if (isEditable && !eventMatchesAction(e, hotkeys, 'focusSearch')) {
+        if (
+          eventMatchesAction(e, hotkeys, 'addSegment') &&
+          e.target?.dataset?.segmentInput === 'true'
+        ) {
+          e.preventDefault();
+          addSegmentFromDraft();
+        }
+        return;
+      }
+
+      const isSharedPlayPanBinding =
+        eventMatchesAction(e, hotkeys, 'panHold') &&
+        eventMatchesAction(e, hotkeys, 'togglePlayback');
+      if (
+        e.repeat &&
+        (!eventMatchesAction(e, hotkeys, 'panHold') || isSharedPlayPanBinding)
+      ) return;
 
       if (eventMatchesAction(e, hotkeys, 'undo')) {
         e.preventDefault();
@@ -83,8 +111,7 @@ export default function useEditorHotkeys(params) {
       }
       if (
         eventMatchesAction(e, hotkeys, 'toggleFocusMode') &&
-        e.target?.tagName !== 'INPUT' &&
-        e.target?.tagName !== 'TEXTAREA'
+        !isEditable
       ) {
         e.preventDefault();
         setIsFocusMode(prev => {
@@ -96,24 +123,16 @@ export default function useEditorHotkeys(params) {
       }
       if (
         eventMatchesAction(e, hotkeys, 'cycleSegmentMode') &&
-        e.target?.tagName !== 'INPUT' &&
-        e.target?.tagName !== 'TEXTAREA'
+        !isEditable
       ) {
         e.preventDefault();
         cycleSegmentMode();
         return;
       }
 
-      if (e.target?.tagName === 'INPUT' || e.target?.tagName === 'TEXTAREA') {
-        if (eventMatchesAction(e, hotkeys, 'addSegment') && e.target?.dataset?.segmentInput === 'true') {
-          e.preventDefault();
-          addSegmentFromDraft();
-        }
-        return;
-      }
-
       if (
         eventMatchesAction(e, hotkeys, 'panHold') &&
+        !isSharedPlayPanBinding &&
         viewportHoverRef.current &&
         currentEdit.viewMode === 'editor'
       ) {
@@ -323,25 +342,41 @@ export default function useEditorHotkeys(params) {
       const { hotkeys, hotkeyCaptureRef, altDownRef, altUsedWithOtherRef, spacePanRef, cycleSeekStep } =
         paramsRef.current;
 
-      if (hotkeyCaptureRef?.current) return;
-
       if (eventMatchesAction(e, hotkeys, 'panHold')) {
         spacePanRef.current = false;
       }
 
-      if (e.code !== 'AltLeft' && e.code !== 'AltRight') return;
-      if (altDownRef.current && !altUsedWithOtherRef.current) {
-        cycleSeekStep();
+      if (e.code === 'AltLeft' || e.code === 'AltRight') {
+        const shouldCycle = altDownRef.current && !altUsedWithOtherRef.current;
+        altDownRef.current = false;
+        altUsedWithOtherRef.current = false;
+        if (
+          shouldCycle &&
+          !hotkeyCaptureRef?.current &&
+          !isEditableTarget(e.target)
+        ) {
+          cycleSeekStep();
+        }
+        return;
       }
+
+      if (hotkeyCaptureRef?.current) return;
+    };
+
+    const releaseHeldKeys = () => {
+      const { altDownRef, altUsedWithOtherRef, spacePanRef } = paramsRef.current;
       altDownRef.current = false;
       altUsedWithOtherRef.current = false;
+      spacePanRef.current = false;
     };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', releaseHeldKeys);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', releaseHeldKeys);
     };
   }, []);
 }

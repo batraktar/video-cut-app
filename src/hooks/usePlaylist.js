@@ -20,6 +20,7 @@ export default function usePlaylist({
   const [playlistViewportHeight, setPlaylistViewportHeight] = useState(0);
 
   const playlistRef = useRef([]);
+  const hasPersistedPlaylistRef = useRef(false);
   const playlistScrollRef = useRef(null);
   const searchInputRef = useRef(null);
 
@@ -220,6 +221,8 @@ export default function usePlaylist({
 
   useEffect(() => {
     playlistRef.current = playlist;
+    if (playlist.length > 0) hasPersistedPlaylistRef.current = true;
+    if (!hasPersistedPlaylistRef.current) return;
     const payload = playlist.map(v => ({
       id: v.id,
       name: v.name,

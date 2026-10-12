@@ -1010,6 +1010,8 @@ export default function App() {
     loadAdminSheet,
     loadAdminSnapshot,
     saveAdminConfig,
+    syncSheetFromCsv,
+    saveGoogleCredentials,
     saveAdminSnapshot,
     applyAdminSnapshot,
     applySnapshotPayload,
@@ -1069,7 +1071,7 @@ export default function App() {
       buildRcloneCopyLine,
       getExpectedModesForAi
     },
-    autoSyncEnabled: serverHydrationState !== 'pending' && autoSyncAllowed
+    autoSyncEnabled: serverHydrationState !== 'pending'
   });
 
   const applySnapshotPayloadRef = useRef(applySnapshotPayload);
@@ -1080,7 +1082,8 @@ export default function App() {
   const hasServerSnapshotData = payload => {
     if (!payload || typeof payload !== 'object') return false;
     const playlist = Array.isArray(payload.playlist) ? payload.playlist : [];
-    return playlist.length > 0;
+    const edits = payload.edits && typeof payload.edits === 'object' ? payload.edits : {};
+    return playlist.length > 0 || Object.keys(edits).length > 0;
   };
 
   useEffect(() => {
@@ -1135,7 +1138,7 @@ export default function App() {
     currentEdit,
     buildServerFileUrl,
     showHud,
-    disableIdb: true,
+    disableIdb: false,
     localHydrationEnabled: serverHydrationState === 'failed',
     autoSaveEnabled
   });
@@ -2210,7 +2213,7 @@ export default function App() {
         elementPreviewRef.current.delete(target.id);
       } else if (target?.type === 'segment') {
         const latest = segmentPreviewRef.current.get(target.id);
-        if (latest) updateSegment(target.id, latest, true);
+        if (latest) updateSegmentRef.current(target.id, latest, true);
         setActiveSegmentId(target.id);
         segmentPreviewRef.current.delete(target.id);
       } else if (target?.type === 'trim-start' || target?.type === 'trim-end') {
@@ -2629,6 +2632,8 @@ export default function App() {
         onConfigChange={setAdminConfig}
         onPickFolder={pickAdminFolder}
         onSaveConfig={saveAdminConfig}
+        onSyncSheetFromCsv={syncSheetFromCsv}
+        onSaveGoogleCredentials={saveGoogleCredentials}
         onAddVideos={addVideosFromServer}
         onRunAiSegments={runAdminAiSegments}
         onRunClipchampExport={runAdminClipchampExport}

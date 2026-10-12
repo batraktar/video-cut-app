@@ -6,6 +6,7 @@ export default defineConfig({
   base: process.env.VITE_ELECTRON === '1' ? './' : '/',
   plugins: [react()],
   server: {
+    strictPort: true,
     hmr: {
       host: 'localhost'
     }

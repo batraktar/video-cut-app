@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CloudUpload, Layers, Save } from 'lucide-react';
+import { CloudUpload, Layers, RefreshCw, Save } from 'lucide-react';
 import { SEGMENT_MODES } from '../lib/editorConstants';
 
 const ADMIN_TABS = [
@@ -50,6 +50,8 @@ export default function AdminModal({
   onConfigChange,
   onPickFolder,
   onSaveConfig,
+  onSyncSheetFromCsv,
+  onSaveGoogleCredentials,
   onAddVideos,
   onRunAiSegments,
   onRunClipchampExport,
@@ -72,9 +74,30 @@ export default function AdminModal({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selectedModes, setSelectedModes] = useState([]);
   const [snowFilter, setSnowFilter] = useState('any');
-  const [onlySheet, setOnlySheet] = useState(true);
+  const [onlySheet, setOnlySheet] = useState(false);
   const [pickerError, setPickerError] = useState('');
   const [activeTab, setActiveTab] = useState('files');
+  const [googleServiceAccountJson, setGoogleServiceAccountJson] = useState('');
+  const [googleCredentialsError, setGoogleCredentialsError] = useState('');
+
+  const saveGoogleCredentials = async () => {
+    setGoogleCredentialsError('');
+    const result = await onSaveGoogleCredentials(googleServiceAccountJson);
+    if (result === 'ok') {
+      setGoogleServiceAccountJson('');
+      return;
+    }
+    const messages = {
+      credentials_json_invalid: 'JSON пошкоджений або скопійований не повністю. Встав увесь вміст нового JSON-файлу.',
+      credentials_fields_missing: 'У JSON не знайдено client_email або private_key. Потрібен повний JSON-ключ Service Account.',
+      credentials_key_invalid: 'Ключ недійсний або відкликаний. Створи новий JSON-ключ Service Account і встав увесь файл.',
+      sheets_api_disabled: 'У проєкті Google Cloud вимкнено Google Sheets API. Увімкни його й повтори перевірку.',
+      sheet_access_denied: 'Немає доступу до таблиці. Поділися нею з client_email із JSON як із Редактором.',
+      spreadsheet_not_found_or_unshared: 'Таблицю не знайдено. Перевір Sheet ID і доступ Service Account до неї.',
+      google_validation_failed: 'Google не підтвердив доступ. Перевір новий JSON-ключ, Sheet ID і доступ Service Account.'
+    };
+    setGoogleCredentialsError(messages[result] || 'Перевір підключення до локального сервера й повтори спробу.');
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -91,6 +114,7 @@ export default function AdminModal({
     if (importPickerRequest <= importPickerHandled) return;
     const timer = window.setTimeout(() => {
       onLoadSheet?.();
+      setOnlySheet(false);
       setPickerOpen(true);
       onImportPickerHandled?.(importPickerRequest);
     }, 0);
@@ -106,6 +130,7 @@ export default function AdminModal({
   const handleOpenPicker = () => {
     onLoadSheet?.();
     setPickerError('');
+    setOnlySheet(false);
     setPickerOpen(true);
   };
   const toggleMode = modeId => {
@@ -268,7 +293,7 @@ export default function AdminModal({
                   : 'border-slate-500/60 text-slate-400 bg-slate-800/40'
                   }`}
               >
-                {adminHealth?.ok ? 'Online' : 'Offline'}
+                {adminHealth === null ? 'Перевірка…' : adminHealth.ok ? 'Online' : 'Offline'}
               </span>
             </div>
             <div className="mt-2 flex items-center gap-2">
@@ -336,6 +361,7 @@ export default function AdminModal({
                     </b>
                   </span>
                   <span className="text-emerald-400">Додано: <b>{adminImportStats.added}</b></span>
+                  <span className="text-indigo-400">Оновлено: <b>{adminImportStats.updated || 0}</b></span>
                   <span className="text-sky-400">В таблиці: <b>{adminImportStats.inSheet}</b></span>
                   <span className="text-amber-400">Фільтр: <b>{adminImportStats.filteredOut || 0}</b></span>
                   <span className="text-rose-400">
@@ -378,7 +404,7 @@ export default function AdminModal({
           </div>
           <div className="mt-3 grid gap-2 md:grid-cols-5">
             <label className="flex flex-col gap-1 text-[10px] text-slate-400">
-              Rclone remote
+              Назва rclone-підключення (remote)
               <input
                 type="text"
                 value={adminConfig.clipchampDriveRemote || ''}
@@ -386,11 +412,11 @@ export default function AdminModal({
                   onConfigChange(prev => ({ ...prev, clipchampDriveRemote: e.target.value }))
                 }
                 className={`w-full rounded border p-2 text-xs ${isDark ? 'border-slate-700 bg-slate-800 text-slate-200' : 'border-slate-200 bg-white text-slate-800'}`}
-                placeholder="lqd-kotyk-helper"
+                placeholder="my-google-drive"
               />
             </label>
             <label className="flex flex-col gap-1 text-[10px] text-slate-400 md:col-span-2">
-              Google Drive Folder URL або ID
+              Посилання або ID папки Google Drive
               <input
                 type="text"
                 value={adminConfig.clipchampDriveFolderId || ''}
@@ -398,7 +424,7 @@ export default function AdminModal({
                   onConfigChange(prev => ({ ...prev, clipchampDriveFolderId: e.target.value }))
                 }
                 className={`w-full rounded border p-2 text-xs ${isDark ? 'border-slate-700 bg-slate-800 text-slate-200' : 'border-slate-200 bg-white text-slate-800'}`}
-                placeholder="1_bNIOZBZfbHQU9oEC2e_5Xqu5lSC4D2H"
+                placeholder="https://drive.google.com/drive/folders/..."
               />
             </label>
             <label className="flex flex-col gap-1 text-[10px] text-slate-400">
@@ -421,6 +447,31 @@ export default function AdminModal({
               Вивантажити
             </button>
           </div>
+          <details className={`mt-3 rounded border p-3 text-xs ${isDark ? 'border-slate-700 bg-slate-900/60 text-slate-300' : 'border-sky-200 bg-white/80 text-slate-700'}`}>
+            <summary className="cursor-pointer font-bold">Як надати редактору доступ до Google Drive</summary>
+            <div className="mt-2 space-y-2 leading-relaxed">
+              <p>
+                Доступ налаштовується один раз на цьому комп’ютері через rclone. У параметрах нижче вкажи назву remote і папку, куди можна завантажувати файли. Пароль Google тут вводити не потрібно.
+              </p>
+              <ol className="list-decimal space-y-1 pl-5">
+                <li>
+                  Встанови <a className="font-semibold underline" href="https://rclone.org/downloads/" target="_blank" rel="noreferrer">rclone</a> на той самий комп’ютер, де запущено редактор.
+                </li>
+                <li>
+                  Відкрий Terminal (Mac) або PowerShell (Windows), введи <code className="rounded bg-black/10 px-1">rclone config</code>, обери створення нового remote, задай йому назву як у полі нижче та вибери Google Drive (`drive`).
+                </li>
+                <li>
+                  Для стабільного доступу створи власні OAuth Client ID і Secret за <a className="font-semibold underline" href="https://rclone.org/drive/#making-your-own-client-id" target="_blank" rel="noreferrer">інструкцією rclone</a>. У майстрі rclone введи їх, обери scope `drive`, дозволь авторизацію в браузері та увійди в Google-акаунт із правом редактора для цільової папки.
+                </li>
+                <li>
+                  Перевір доступ командою <code className="rounded bg-black/10 px-1">rclone lsd {String(adminConfig.clipchampDriveRemote || 'my-google-drive').trim().replace(/:+$/, '')}:</code>. Якщо команда показує папки без помилки, встав посилання на папку Drive у поле нижче та натисни «Зберегти налаштування».
+                </li>
+              </ol>
+              <p className="text-slate-400">
+                Remote і авторизація зберігаються локально в профілі користувача ОС, а не у вебредакторі. Для Shared Drive під час налаштування rclone обери, що це Shared Drive.
+              </p>
+            </div>
+          </details>
           <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-400">
             <span>Тека: Clipchamp_YYYY-MM-DD_HH-mm-ss</span>
             <button
@@ -1035,6 +1086,40 @@ export default function AdminModal({
                 />
               </div>
             </div>
+            <details className={`mt-3 rounded border p-3 text-xs leading-relaxed ${isDark ? 'border-slate-700 bg-slate-800/60 text-slate-300' : 'border-slate-200 bg-white text-slate-600'}`}>
+              <summary className="cursor-pointer font-semibold text-sky-500">Як підключити Google Sheets</summary>
+              <ol className="mt-2 list-decimal space-y-2 pl-4">
+                <li>У <a className="text-sky-500 underline" href="https://console.cloud.google.com/apis/library/sheets.googleapis.com" target="_blank" rel="noreferrer">Google Cloud Console</a> вибери або створи проєкт і ввімкни Google Sheets API.</li>
+                <li>Створи Service Account і завантаж для нього JSON-ключ. Нижче відкрий цей файл у текстовому редакторі, скопіюй увесь вміст і встав у поле доступу.</li>
+                <li>Відкрий JSON-файл, скопіюй значення <code>client_email</code> і надай цій адресі доступ до таблиці як <strong>Редактор</strong>.</li>
+                <li>У URL таблиці скопіюй ID між <code>/d/</code> та <code>/edit</code>. GID — число після <code>gid=</code> у URL потрібної вкладки. Встав значення вище й натисни «Зберегти налаштування таблиці».</li>
+              </ol>
+              <p className="mt-2">Ключ зберігається локально на цьому комп’ютері й не відображається після збереження.</p>
+              <p className="mt-2">Документація: <a className="text-sky-500 underline" href="https://developers.google.com/workspace/sheets/api/quickstart/js" target="_blank" rel="noreferrer">увімкнення Sheets API</a> · <a className="text-sky-500 underline" href="https://cloud.google.com/iam/docs/service-accounts-create" target="_blank" rel="noreferrer">створення Service Account</a> · <a className="text-sky-500 underline" href="https://cloud.google.com/iam/docs/keys-create-delete" target="_blank" rel="noreferrer">JSON-ключ</a></p>
+            </details>
+            <div className="mt-3 flex flex-col gap-2">
+              <label htmlFor="google-service-account-json" className="text-xs font-medium text-slate-500">
+                {adminConfig.googleCredentialsConfigured ? 'Google доступ налаштовано. Встав новий JSON-ключ, щоб замінити його.' : 'JSON-ключ сервісного акаунта'}
+              </label>
+              <input
+                id="google-service-account-json"
+                type="password"
+                autoComplete="new-password"
+                value={googleServiceAccountJson}
+                onChange={event => setGoogleServiceAccountJson(event.target.value)}
+                className={`w-full text-xs p-2 rounded border focus:ring-1 focus:ring-sky-500 outline-none ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200 focus:border-sky-500' : 'bg-white border-slate-200 focus:border-sky-400'}`}
+                placeholder="Встав сюди весь вміст JSON-файлу"
+              />
+              {googleCredentialsError && <p role="alert" className="text-xs text-red-500">{googleCredentialsError}</p>}
+              <button
+                type="button"
+                onClick={saveGoogleCredentials}
+                disabled={!googleServiceAccountJson.trim() || adminLoading}
+                className="w-full px-3 py-2 rounded text-xs font-bold bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50 transition-colors"
+              >
+                Зберегти й перевірити доступ Google
+              </button>
+            </div>
             <div className="mt-3">
               <button
                 onClick={onSaveConfig}
@@ -1044,6 +1129,23 @@ export default function AdminModal({
                 <Save className="w-3.5 h-3.5" />
                 Зберегти налаштування таблиці
               </button>
+            </div>
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={onSyncSheetFromCsv}
+                disabled={adminLoading}
+                className="w-full px-3 py-2 rounded text-xs font-bold border border-sky-600 text-sky-700 hover:bg-sky-50 dark:border-sky-500 dark:text-sky-300 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Оновити таблицю з links_map.csv
+              </button>
+              <p className="mt-1 text-xs text-slate-400">
+                Оновить parse!A:B з CSV і заповнить pre-final!H за посиланнями з колонки A. Інші колонки не змінює.
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Для pre-final без відповідника в parse!A:B клітинка H очищується, як у твоєму Apps Script. Береться найновіший links_map.csv.
+              </p>
             </div>
           </div>
         </div>

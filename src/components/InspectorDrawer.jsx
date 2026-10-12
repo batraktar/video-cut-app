@@ -102,6 +102,9 @@ export default function InspectorDrawer({ isDark, segmentCount = 0, children }) 
         } ${open ? 'translate-x-0 opacity-100' : 'translate-x-2 pointer-events-none opacity-0'}`}
         style={{ right: 52, width }}
         aria-hidden={!open}
+        inert={!open}
+        onMouseEnter={cancelClose}
+        onMouseLeave={scheduleClose}
       >
         <div
           className={`flex h-10 shrink-0 items-center justify-between border-b px-3 ${

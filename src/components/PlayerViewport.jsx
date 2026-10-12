@@ -42,12 +42,14 @@ function PlayerViewport({
   return (
     <div
       ref={viewportRef}
+      tabIndex={-1}
       className={`cvat-canvas-bg relative flex min-h-[280px] flex-1 flex-col items-center justify-center overflow-hidden select-none group ${viewportHeightClass} ${
         canvasTool === 'pan' ? 'cursor-grab active:cursor-grabbing' : ''
       }`}
       style={isFocusMode ? { height: focusHeightPx } : undefined}
       onMouseEnter={onViewportMouseEnter}
       onMouseLeave={onViewportMouseLeave}
+      onMouseDownCapture={event => event.currentTarget.focus({ preventScroll: true })}
       onMouseDown={canvasTool === 'pan' ? onPanStart : undefined}
     >
       {showSnow && (

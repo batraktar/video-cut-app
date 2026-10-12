@@ -62,6 +62,8 @@ export default function AppOverlays({
   onConfigChange,
   onPickFolder,
   onSaveConfig,
+  onSyncSheetFromCsv,
+  onSaveGoogleCredentials,
   onAddVideos,
   onRunAiSegments,
   onRunClipchampExport,
@@ -159,6 +161,8 @@ export default function AppOverlays({
         onConfigChange={onConfigChange}
         onPickFolder={onPickFolder}
         onSaveConfig={onSaveConfig}
+        onSyncSheetFromCsv={onSyncSheetFromCsv}
+        onSaveGoogleCredentials={onSaveGoogleCredentials}
         onAddVideos={onAddVideos}
         onRunAiSegments={onRunAiSegments}
         onRunClipchampExport={onRunClipchampExport}

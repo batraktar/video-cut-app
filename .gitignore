@@ -8,6 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.telegram-venv
 dist
 dist-ssr
 *.local
@@ -16,6 +17,7 @@ server/metadata.sqlite
 server/.env
 tools/telegram-downloader/Telegram Uploads/
 tools/telegram-downloader/telegram_session.session
+tools/telegram-downloader/telegram_api.json
 tools/telegram-downloader/*.session-journal
 
 # Editor directories and files

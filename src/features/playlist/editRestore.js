@@ -31,6 +31,11 @@ export const getSavedEditForVideo = (savedEdits, video, fileKeyCounts) => {
   if (!savedEdits || !video) return null;
   if (savedEdits[video.id]) return savedEdits[video.id];
   if (video.fileKey && savedEdits[video.fileKey]) return savedEdits[video.fileKey];
+  if (video.source === 'server' && video.sourceBaseDir && video.sourcePath) {
+    const legacyPrefix = `server:${video.sourceBaseDir}|${video.sourcePath}|`;
+    const legacyKey = Object.keys(savedEdits).find(key => key.startsWith(legacyPrefix));
+    if (legacyKey) return savedEdits[legacyKey];
+  }
   if (fileKeyCounts?.get(video.fileKey) === 1) return savedEdits[video.fileKey] || null;
   return null;
 };

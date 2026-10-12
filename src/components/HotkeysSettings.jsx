@@ -27,12 +27,12 @@ export default function HotkeysSettings({ isDark, hotkeys, setHotkeys, hotkeyCap
   const slotStyles = useMemo(
     () => [
       {
-        light: 'border-sky-300 text-sky-700 hover:bg-sky-500',
-        dark: 'border-sky-500/60 text-sky-200 hover:bg-sky-900/20'
+        light: 'border-sky-800 bg-sky-700 text-white hover:bg-sky-800',
+        dark: 'border-sky-700 bg-sky-950 text-sky-200 hover:bg-sky-900'
       },
       {
-        light: 'border-emerald-300 text-emerald-700 hover:bg-emerald-500',
-        dark: 'border-emerald-500/60 text-emerald-200 hover:bg-emerald-900/20'
+        light: 'border-emerald-800 bg-emerald-700 text-white hover:bg-emerald-800',
+        dark: 'border-emerald-700 bg-emerald-950 text-emerald-200 hover:bg-emerald-900'
       }
     ],
     []

@@ -8,11 +8,15 @@ import fs from 'fs';
 import { spawn, execFile } from 'child_process';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import {
   buildLinkFilenameMap,
+  buildTelegramSheetSyncPlan,
   buildSheetRows,
+  resolveSheetRangeByGid,
   resolveSheetFilenames
 } from './sheetRows.js';
+import { classifyGoogleCredentialError } from './googleCredentialError.js';
 
 const PORT = process.env.PORT || 7071;
 const DB_PATH = process.env.DB_PATH || new URL('./metadata.sqlite', import.meta.url).pathname;
@@ -70,6 +74,8 @@ app.use(express.json({ limit: '5mb' }));
 
 let db;
 let sheetsClient;
+const isLoopbackAddress = address =>
+  ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
 const runningJobs = new Map();
 const jobQueue = [];
 let jobRunnerBusy = false;
@@ -85,6 +91,11 @@ const initDb = async () => {
     CREATE TABLE IF NOT EXISTS config (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS app_secrets (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      service_account_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS jobs (
@@ -104,18 +115,20 @@ const initDb = async () => {
   `);
 };
 
-const loadServiceAccount = () => {
+const loadServiceAccount = async () => {
   if (SERVICE_ACCOUNT_JSON) {
     return JSON.parse(SERVICE_ACCOUNT_JSON);
   }
   if (SERVICE_ACCOUNT_PATH) {
     return JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, 'utf8'));
   }
+  const row = await db.get('SELECT service_account_json FROM app_secrets WHERE id = 1');
+  if (row?.service_account_json) return JSON.parse(row.service_account_json);
   return null;
 };
 
-const initSheetsClient = () => {
-  const creds = loadServiceAccount();
+const initSheetsClient = async credentials => {
+  const creds = credentials || await loadServiceAccount();
   if (!creds?.client_email || !creds?.private_key) return null;
   const auth = new google.auth.JWT(
     creds.client_email,
@@ -128,21 +141,33 @@ const initSheetsClient = () => {
 };
 
 const loadLinkFilenameMap = async baseDir => {
-  if (!baseDir) return { map: new Map(), sourcePath: '' };
+  const appDirectory = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    path.join(baseDir, 'links_map.csv'),
-    path.join(path.dirname(baseDir), 'links_map.csv')
-  ];
-  for (const candidate of candidates) {
+    baseDir && path.join(baseDir, 'links_map.csv'),
+    baseDir && path.join(path.dirname(baseDir), 'links_map.csv'),
+    path.resolve(appDirectory, '..', 'tools', 'telegram-downloader', 'Telegram Uploads', 'links_map.csv')
+  ].filter(Boolean);
+  const existingFiles = [];
+  for (const candidate of new Set(candidates)) {
     try {
-      const csvText = await fs.promises.readFile(candidate, 'utf8');
-      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-      return { map: buildLinkFilenameMap(parsed.data || []), sourcePath: candidate };
+      const stat = await fs.promises.stat(candidate);
+      if (stat.isFile()) existingFiles.push({ candidate, modifiedAt: stat.mtimeMs });
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
   }
-  return { map: new Map(), sourcePath: '' };
+  existingFiles.sort((left, right) => right.modifiedAt - left.modifiedAt);
+  for (const { candidate } of existingFiles) {
+    try {
+      const csvText = await fs.promises.readFile(candidate, 'utf8');
+      const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+      const records = parsed.data || [];
+      return { map: buildLinkFilenameMap(records), records, sourcePath: candidate };
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  return { map: new Map(), records: [], sourcePath: '' };
 };
 
 const fetchSheetRows = async () => {
@@ -152,9 +177,18 @@ const fetchSheetRows = async () => {
   const sheetRange = config.sheetRange || DEFAULT_SHEET_RANGE;
   let values;
   if (sheetsClient) {
+    const metadata = await sheetsClient.spreadsheets.get({
+      spreadsheetId: sheetId,
+      fields: 'sheets.properties(sheetId,title)'
+    });
+    const resolvedRange = resolveSheetRangeByGid(
+      metadata.data.sheets,
+      sheetGid,
+      sheetRange
+    );
     const result = await sheetsClient.spreadsheets.values.get({
       spreadsheetId: sheetId,
-      range: sheetRange
+      range: resolvedRange
     });
     values = result.data.values || [];
   } else {
@@ -177,6 +211,8 @@ const fetchSheetRows = async () => {
 
 const getConfig = async () => {
   const row = await db.get('SELECT payload FROM config WHERE id = 1');
+  const savedCredentials = Boolean(await db.get('SELECT id FROM app_secrets WHERE id = 1'));
+  const googleCredentialsConfigured = Boolean(SERVICE_ACCOUNT_JSON || SERVICE_ACCOUNT_PATH || savedCredentials);
   if (!row) {
     return {
       baseDir: DEFAULT_BASE_DIR,
@@ -185,6 +221,7 @@ const getConfig = async () => {
       sheetGid: DEFAULT_SHEET_GID,
       sheetName: DEFAULT_SHEET_NAME,
       sheetRange: DEFAULT_SHEET_RANGE,
+      googleCredentialsConfigured,
       clipchampDriveRemote: DEFAULT_CLIPCHAMP_DRIVE_REMOTE,
       clipchampDriveFolderId: DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID,
       clipchampFolderPrefix: DEFAULT_CLIPCHAMP_FOLDER_PREFIX
@@ -230,7 +267,8 @@ const getConfig = async () => {
         (typeof payload.sheetName === 'string' ? payload.sheetName : DEFAULT_SHEET_NAME),
       sheetRange:
         ENV_SHEET_RANGE ||
-        (typeof payload.sheetRange === 'string' ? payload.sheetRange : DEFAULT_SHEET_RANGE)
+        (typeof payload.sheetRange === 'string' ? payload.sheetRange : DEFAULT_SHEET_RANGE),
+      googleCredentialsConfigured
     };
   } catch (e) {
     return {
@@ -255,7 +293,8 @@ const getConfig = async () => {
       sheetId: DEFAULT_SHEET_ID,
       sheetGid: DEFAULT_SHEET_GID,
       sheetName: DEFAULT_SHEET_NAME,
-      sheetRange: DEFAULT_SHEET_RANGE
+      sheetRange: DEFAULT_SHEET_RANGE,
+      googleCredentialsConfigured
     };
   }
 };
@@ -518,6 +557,48 @@ const stopJobById = async id => {
 
 app.get('/health', (req, res) => {
   res.json({ ok: true });
+});
+
+app.post('/google-credentials', async (req, res) => {
+  const remoteAddress = req.socket.remoteAddress || '';
+  if (!isLoopbackAddress(remoteAddress)) {
+    return res.status(403).json({ ok: false, error: 'local_only' });
+  }
+  try {
+    if (SERVICE_ACCOUNT_JSON || SERVICE_ACCOUNT_PATH) {
+      return res.status(409).json({ ok: false, error: 'credentials_from_environment' });
+    }
+    const raw = req.body?.serviceAccountJson;
+    if (typeof raw !== 'string' || !raw.trim()) {
+      return res.status(400).json({ ok: false, error: 'credentials_required' });
+    }
+    let credentials;
+    try {
+      credentials = JSON.parse(raw);
+    } catch {
+      return res.status(400).json({ ok: false, error: 'credentials_json_invalid' });
+    }
+    if (!credentials?.client_email || !credentials?.private_key) {
+      return res.status(400).json({ ok: false, error: 'credentials_fields_missing' });
+    }
+    const candidate = await initSheetsClient(credentials);
+    const config = await getConfig();
+    await candidate.spreadsheets.get({
+      spreadsheetId: config.sheetId || DEFAULT_SHEET_ID,
+      fields: 'spreadsheetId'
+    });
+    await db.run(
+      `INSERT INTO app_secrets (id, service_account_json, updated_at) VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET service_account_json = excluded.service_account_json,
+       updated_at = excluded.updated_at`,
+      [raw, new Date().toISOString()]
+    );
+    sheetsClient = candidate;
+    res.json({ ok: true });
+  } catch (error) {
+    sheetsClient = await initSheetsClient();
+    res.status(400).json({ ok: false, error: classifyGoogleCredentialError(error) });
+  }
 });
 
 app.get('/config', async (req, res) => {
@@ -924,6 +1005,80 @@ app.post('/sheet/status', async (req, res) => {
   }
 });
 
+app.post('/sheet/sync-file-names', async (req, res) => {
+  if (!isLoopbackAddress(req.socket.remoteAddress || '')) {
+    return res.status(403).json({ ok: false, error: 'local_only' });
+  }
+  try {
+    if (!sheetsClient) {
+      return res.status(400).json({ ok: false, error: 'sheet_write_not_configured' });
+    }
+    const config = await getConfig();
+    const linkMap = await loadLinkFilenameMap(config.baseDir || DEFAULT_BASE_DIR);
+    if (!linkMap.sourcePath) {
+      return res.status(404).json({ ok: false, error: 'links_map_not_found' });
+    }
+
+    const spreadsheetId = config.sheetId || DEFAULT_SHEET_ID;
+    const metadata = await sheetsClient.spreadsheets.get({
+      spreadsheetId,
+      fields: 'sheets.properties(sheetId,title)'
+    });
+    const sheetTitles = new Set((metadata.data.sheets || []).map(sheet => sheet.properties?.title));
+    if (!sheetTitles.has('parse') || !sheetTitles.has('pre-final')) {
+      return res.status(400).json({ ok: false, error: 'sheet_sync_tabs_missing' });
+    }
+
+    const [parseResult, preFinalResult] = await Promise.all([
+      sheetsClient.spreadsheets.values.get({ spreadsheetId, range: "'parse'!A:B" }),
+      sheetsClient.spreadsheets.values.get({ spreadsheetId, range: "'pre-final'!A:H" })
+    ]);
+    const plan = buildTelegramSheetSyncPlan(
+      parseResult.data.values || [],
+      preFinalResult.data.values || [],
+      linkMap.records
+    );
+
+    if (plan.parseUpdates.length > 0) {
+      const data = plan.parseUpdates.map(update => ({
+        range: `'parse'!B${update.rowIndex}`,
+        values: [[update.filename]]
+      }));
+      await sheetsClient.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: { valueInputOption: 'RAW', data }
+      });
+    }
+    if (plan.parseAppends.length > 0) {
+      await sheetsClient.spreadsheets.values.append({
+        spreadsheetId,
+        range: "'parse'!A:B",
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: plan.parseAppends }
+      });
+    }
+    if (plan.preFinalNames.length > 0) {
+      await sheetsClient.spreadsheets.values.update({
+        spreadsheetId,
+        range: `'pre-final'!H2:H${plan.preFinalNames.length + 1}`,
+        valueInputOption: 'RAW',
+        requestBody: { values: plan.preFinalNames }
+      });
+    }
+
+    res.json({
+      ok: true,
+      parseUpdated: plan.parseUpdates.length,
+      parseAdded: plan.parseAppends.length,
+      preFinalFilled: plan.preFinalNames.filter(([name]) => name).length,
+      sourcePath: linkMap.sourcePath
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: 'sheet_sync_failed' });
+  }
+});
+
 app.post('/jobs', async (req, res) => {
   try {
     const { command } = req.body || {};
@@ -1041,7 +1196,10 @@ app.get('/snapshot', async (req, res) => {
 
 initDb()
   .then(() => {
-    sheetsClient = initSheetsClient();
+    return initSheetsClient();
+  })
+  .then(client => {
+    sheetsClient = client;
     app.listen(PORT, () => {
       console.log(`Local DB server running on http://localhost:${PORT}`);
     });

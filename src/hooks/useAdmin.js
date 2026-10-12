@@ -33,6 +33,7 @@ import {
   parseLabelTokens,
   resolveSegmentModeFromMeta,
   resolveSegmentModeFromSuffix,
+  resolveImportSuffix,
   resolveSuffixFromMode,
   saveToStorage
 } from '../lib/editorUtils';
@@ -50,7 +51,8 @@ export default function useAdmin({
   showHud,
   prefs,
   setPrefs,
-  helpers
+  helpers,
+  autoSyncEnabled = true
 }) {
   const {
     isDark,
@@ -206,10 +208,25 @@ export default function useAdmin({
         }
         return payload;
       } catch (e) {
+        if (options.returnErrorPayload && e?.payload) return e.payload;
         if (!options.silent) {
           const serverError = e?.payload?.error;
-          if (serverError === 'sheet_read_failed') {
+          if (e?.status === 404) {
+            setAdminError('Локальний сервер застарів. Зупини його у вікні запуску (Ctrl+C) і знову відкрий START.command.');
+          } else if (serverError === 'config_write_failed') {
+            setAdminError('Не вдалося зберегти налаштування на локальному сервері');
+          } else if (serverError === 'sheet_read_failed') {
             setAdminError('Сервер працює, але не вдалося прочитати Google Sheet');
+          } else if (serverError === 'sheet_sync_failed') {
+            setAdminError('Не вдалося записати в Google Sheets. Перевір доступ редактора та захищені діапазони.');
+          } else if (serverError === 'links_map_not_found') {
+            setAdminError('Не знайдено links_map.csv у папці з відео, поруч із нею або в Telegram Uploads');
+          } else if (serverError === 'sheet_sync_columns_missing') {
+            setAdminError('У таблиці мають бути колонки link і tg_file_name');
+          } else if (serverError === 'sheet_sync_tabs_missing') {
+            setAdminError('У таблиці мають бути аркуші parse та pre-final');
+          } else if (serverError === 'sheet_write_not_configured') {
+            setAdminError('Спочатку налаштуй доступ сервісного акаунта до таблиці');
           } else {
             setAdminError('Не вдалося підключитися до сервера');
           }
@@ -294,9 +311,9 @@ export default function useAdmin({
     setAdminJobExpectedDuration(adminJobExpectedMapRef.current.get(job.id) ?? null);
   }, []);
 
-  const pingAdmin = useCallback(async () => {
-    const data = await fetchAdminJson('/health');
-    if (data) setAdminHealth(data);
+  const pingAdmin = useCallback(async ({ silent = false } = {}) => {
+    const data = await fetchAdminJson('/health', { silent });
+    setAdminHealth(data?.ok ? data : { ok: false });
   }, [fetchAdminJson]);
 
   const loadAdminSheet = useCallback(async () => {
@@ -345,7 +362,8 @@ export default function useAdmin({
             : DEFAULT_ADMIN_CONFIG.logoScales,
         aiRemoteUrl: data.config.aiRemoteUrl || DEFAULT_ADMIN_CONFIG.aiRemoteUrl,
         sheetId: data.config.sheetId || DEFAULT_ADMIN_CONFIG.sheetId,
-        sheetGid: data.config.sheetGid || DEFAULT_ADMIN_CONFIG.sheetGid
+        sheetGid: data.config.sheetGid || DEFAULT_ADMIN_CONFIG.sheetGid,
+        googleCredentialsConfigured: Boolean(data.config.googleCredentialsConfigured)
       });
     }
   }, [fetchAdminJson]);
@@ -388,7 +406,31 @@ export default function useAdmin({
     const data = await fetchAdminJson('/config', { method: 'POST', json: payload });
     if (data?.config) setAdminConfig(data.config);
     if (data?.ok) showHud("Налаштування збережено");
+    return Boolean(data?.ok);
   }, [adminConfig, fetchAdminJson, showHud]);
+
+  const syncSheetFromCsv = useCallback(async () => {
+    const configSaved = await saveAdminConfig();
+    if (!configSaved) return;
+    const result = await fetchAdminJson('/sheet/sync-file-names', { method: 'POST' });
+    if (!result?.ok) {
+      showHud('Не вдалося оновити таблицю з links_map.csv');
+      return;
+    }
+    showHud(`parse: оновлено ${result.parseUpdated}, додано ${result.parseAdded}; pre-final: заповнено ${result.preFinalFilled}`);
+  }, [fetchAdminJson, saveAdminConfig, showHud]);
+
+  const saveGoogleCredentials = useCallback(async serviceAccountJson => {
+    const result = await fetchAdminJson('/google-credentials', {
+      method: 'POST',
+      json: { serviceAccountJson },
+      returnErrorPayload: true
+    });
+    if (!result?.ok) return result?.error || 'google_validation_failed';
+    setAdminConfig(current => ({ ...current, googleCredentialsConfigured: true }));
+    showHud('Доступ Google Sheets збережено');
+    return 'ok';
+  }, [fetchAdminJson, showHud]);
 
   const loadSheetMap = useCallback(async () => {
     if (sheetMapPromiseRef.current) return sheetMapPromiseRef.current;
@@ -496,9 +538,22 @@ export default function useAdmin({
     payload => {
       if (!payload) return;
       const savedList = Array.isArray(payload.playlist) ? payload.playlist : [];
+      const migratedEdits = { ...(payload.edits || {}) };
       const normalized = savedList
         .filter(item => item?.fileKey)
         .map(item => {
+          const stableServerKey =
+            item.source === 'server' && item.sourcePath
+              ? getServerFileKey(item.sourceBaseDir || '', item.sourcePath)
+              : '';
+          if (stableServerKey && (stableServerKey !== item.id || stableServerKey !== item.fileKey)) {
+            const savedEdit = migratedEdits[item.id] || migratedEdits[item.fileKey];
+            if (savedEdit && !migratedEdits[stableServerKey]) {
+              migratedEdits[stableServerKey] = savedEdit;
+            }
+            if (item.id !== stableServerKey) delete migratedEdits[item.id];
+            if (item.fileKey !== stableServerKey) delete migratedEdits[item.fileKey];
+          }
           const fallbackMode =
             resolveSegmentModeFromMeta(item.sheetMode, item.sheetCameraType) ||
             resolveSegmentModeFromSuffix(item.suffix);
@@ -516,6 +571,7 @@ export default function useAdmin({
             : [];
           return {
             ...item,
+            ...(stableServerKey ? { id: stableServerKey, fileKey: stableServerKey } : {}),
             url: null,
             file: null,
             checked: false,
@@ -536,7 +592,7 @@ export default function useAdmin({
         });
       const { playlist: deduped } = dedupePlaylistAndEdits(normalized, {});
       const fileKeyCounts = getFileKeyCounts(deduped);
-      const savedEdits = payload.edits || {};
+      const savedEdits = migratedEdits;
       savedEditsRef.current = savedEdits;
       setPlaylist(deduped);
       setEdits(() => {
@@ -1679,9 +1735,7 @@ export default function useAdmin({
     data.files.forEach(fileInfo => {
       const fileKey = getServerFileKey(
         baseDir,
-        fileInfo.relativePath,
-        fileInfo.size,
-        fileInfo.mtimeMs
+        fileInfo.relativePath
       );
       const normalizedName = normalizeName(fileInfo.name);
       const sheetEntries = sheetMap?.get(normalizedName) || [];
@@ -1728,15 +1782,18 @@ export default function useAdmin({
 
       if (existingItem) {
         const merged = mergeChannelLists(existingItem.channels, channels);
+        const nextSuffix = resolveImportSuffix(existingItem.suffix, merged);
         const nextHasSnow = existingItem.hasSnow || hasSnow;
         const nextLabels = mergeLabelTokens(existingItem.labels, labels);
         if (
           (merged.length > 0 && merged.length !== (existingItem.channels || []).length) ||
+          nextSuffix !== existingItem.suffix ||
           nextHasSnow !== existingItem.hasSnow ||
           nextLabels.length !== (existingItem.labels || []).length
         ) {
           const updated = {
             ...existingItem,
+            suffix: nextSuffix,
             channels: merged,
             sheetHasBoth: existingItem.sheetHasBoth || sheetHasBoth,
             hasSnow: nextHasSnow,
@@ -1749,7 +1806,7 @@ export default function useAdmin({
         return;
       }
 
-      const primarySuffix = channels[0]?.suffix || '';
+      const primarySuffix = resolveImportSuffix('', channels);
       newVideos.push({
         id: fileKey,
         file: null,
@@ -1779,6 +1836,7 @@ export default function useAdmin({
 
     setAdminImportStats({
       added: newVideos.length,
+      updated: mergedUpdates.length,
       skipped,
       inSheet: inSheetCount,
       unmatched,
@@ -1811,7 +1869,11 @@ export default function useAdmin({
     }
     if (!currentId && dedupedList[0]) setCurrentId(dedupedList[0].id);
     if (newVideos.length === 0) {
-      showHud("Нових файлів немає");
+      showHud(
+        mergedUpdates.length > 0
+          ? `Оновлено ${mergedUpdates.length} файлів`
+          : "Нових файлів немає"
+      );
       return;
     }
     showHud(`Додано ${newVideos.length} файлів`);
@@ -1854,9 +1916,11 @@ export default function useAdmin({
 
   useEffect(() => {
     if (!adminOpen) return;
+    const healthCheck = window.setTimeout(() => pingAdmin({ silent: true }), 0);
     loadAdminConfig();
     loadAdminJobs();
-  }, [adminOpen, loadAdminConfig, loadAdminJobs]);
+    return () => window.clearTimeout(healthCheck);
+  }, [adminOpen, loadAdminConfig, loadAdminJobs, pingAdmin]);
 
   useEffect(() => {
     if (!adminOpen) return;
@@ -1924,7 +1988,9 @@ export default function useAdmin({
   }, [adminJobs, getJobMeta, showHud]);
 
   useEffect(() => {
+    if (!autoSyncEnabled) return;
     const payload = buildSnapshotPayload();
+    if (payload.playlist.length === 0) return;
     const json = JSON.stringify(payload);
     if (json === lastSnapshotRef.current) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
@@ -1945,6 +2011,7 @@ export default function useAdmin({
     sidebarWidth,
     adminBaseUrl,
     overwriteOutputs,
+    autoSyncEnabled,
     buildSnapshotPayload,
     fetchAdminJson
   ]);
@@ -1995,6 +2062,8 @@ export default function useAdmin({
     loadAdminSnapshot,
     loadAdminConfig,
     saveAdminConfig,
+    syncSheetFromCsv,
+    saveGoogleCredentials,
     saveAdminSnapshot,
     applySnapshotPayload,
     applyAdminSnapshot,
