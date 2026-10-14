@@ -34,6 +34,10 @@ def qr_box_size(matrix_size: int, display_size: int = 320) -> int:
     return max(3, display_size // matrix_size)
 
 
+def should_emit_progress(now: float, last_emit: float, received: int, total_bytes: Optional[int], interval: float = 0.2) -> bool:
+    return now - last_emit >= interval or bool(total_bytes and received >= total_bytes)
+
+
 def append_xlsx_rows(path: Path, rows) -> None:
     rows = list(rows)
     if not rows:
@@ -290,7 +294,7 @@ class TelegramBatchDownloader(ctk.CTk):
         ctk.CTkLabel(settings, text="Паралельно").grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
         self.parallel_entry = ctk.CTkEntry(settings, width=80)
         self.parallel_entry.grid(row=1, column=1, padx=10, pady=(0, 10), sticky="w")
-        self.parallel_entry.insert(0, "10")
+        self.parallel_entry.insert(0, "2")
 
         qr_note = ctk.CTkLabel(settings, text="Вхід через QR-код або номер телефону")
         qr_note.grid(row=1, column=2, columnspan=2, padx=10, pady=(0, 10), sticky="w")
@@ -362,9 +366,9 @@ class TelegramBatchDownloader(ctk.CTk):
             self._append_log(f"[ERR] Не вдалося зберегти API-дані: {error}")
             return
         max_parallel = int(parallel_raw)
-        if max_parallel > 10:
-            max_parallel = 10
-            self._append_log("[INFO] Паралельність обмежена до 10 для стабільності.")
+        if max_parallel > 3:
+            max_parallel = 3
+            self._append_log("[INFO] Паралельність обмежена до 3 для стабільної роботи.")
         out_dir = self._prepare_output_dir()
         self._append_log(f"[INFO] Створено папку: {out_dir}")
 
@@ -530,7 +534,7 @@ class TelegramBatchDownloader(ctk.CTk):
                                     time.sleep(0.2)
 
                                 now = time.monotonic()
-                                if now - last_emit < 0.2 and received != (total_bytes or received):
+                                if not should_emit_progress(now, last_emit, received, total_bytes):
                                     return
                                 last_emit = now
 
@@ -748,8 +752,11 @@ class TelegramBatchDownloader(ctk.CTk):
         return str(holder.get("value", "")).strip()
 
     def _process_queue(self) -> None:
-        while not self._queue.empty():
-            msg = self._queue.get()
+        for _ in range(200):
+            try:
+                msg = self._queue.get_nowait()
+            except queue.Empty:
+                break
             msg_type = msg.get("type")
 
             if msg_type == "log":

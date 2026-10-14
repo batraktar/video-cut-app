@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from openpyxl import load_workbook
-from telegram_batch_downloader_qr import append_xlsx_rows, qr_box_size
+from telegram_batch_downloader_qr import append_xlsx_rows, qr_box_size, should_emit_progress
 
 
 class QRBoxSizeTests(unittest.TestCase):
@@ -30,6 +30,11 @@ class QRBoxSizeTests(unittest.TestCase):
         self.assertEqual(rows[0], ("timestamp", "link", "status", "filename", "detail"))
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[-1][1], "t.me/a/2")
+
+    def test_progress_events_are_throttled_even_when_total_size_is_unknown(self):
+        self.assertFalse(should_emit_progress(1.05, 1.0, 50, None))
+        self.assertTrue(should_emit_progress(1.21, 1.0, 50, None))
+        self.assertTrue(should_emit_progress(1.05, 1.0, 100, 100))
 
 
 if __name__ == "__main__":
