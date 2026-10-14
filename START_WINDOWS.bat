@@ -15,7 +15,12 @@ if not exist "server\node_modules" call npm --prefix server install
 if errorlevel 1 goto :failed
 
 call npm run start:user
-exit /b %errorlevel%
+set "LAUNCH_EXIT_CODE=%ERRORLEVEL%"
+if not "%LAUNCH_EXIT_CODE%"=="0" echo Startup failed with exit code %LAUNCH_EXIT_CODE%.
+echo.
+echo Press any key to close this window.
+pause >nul
+exit /b %LAUNCH_EXIT_CODE%
 
 :failed
 echo Installation failed. Check the messages above.

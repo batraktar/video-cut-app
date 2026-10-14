@@ -20,7 +20,12 @@ if not exist ".telegram-venv\Scripts\python.exe" (
 )
 
 .telegram-venv\Scripts\python.exe tools\telegram-downloader\telegram_batch_downloader_qr.py
-exit /b %errorlevel%
+set "APP_EXIT_CODE=%ERRORLEVEL%"
+if not "%APP_EXIT_CODE%"=="0" echo Telegram Downloader exited with code %APP_EXIT_CODE%.
+echo.
+echo Press any key to close this window.
+pause >nul
+exit /b %APP_EXIT_CODE%
 
 :failed
 echo Installation failed. Check the messages above.

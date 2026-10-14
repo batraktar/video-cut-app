@@ -1,11 +1,10 @@
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import process from 'node:process';
-import { getStartupPlan } from './startupPlan.js';
+import { getNpmInvocation, getStartupPlan } from './startupPlan.js';
 
 const APP_URL = 'http://localhost:5173';
 const API_URL = 'http://localhost:7071/health';
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 const isUrlReady = url =>
   new Promise(resolve => {
@@ -73,11 +72,22 @@ if (missingServices.length === 1) {
   console.log(`Редактор частково запущений. Додатково запускаю: ${missingServices[0] === 'api' ? 'локальний сервер' : 'вебредактор'}.`);
 }
 
-const child = spawn(npmCommand, runArgs, {
+const npmInvocation = getNpmInvocation({
+  platform: process.platform,
+  runArgs,
+  comSpec: process.env.ComSpec
+});
+const child = spawn(npmInvocation.command, npmInvocation.args, {
   stdio: 'inherit',
   env: process.env
 });
-const childExit = new Promise(resolve => child.once('exit', code => resolve(code ?? 1)));
+const childExit = new Promise(resolve => {
+  child.once('error', error => {
+    console.error(`Не вдалося запустити локальні служби: ${error.message}`);
+    resolve(1);
+  });
+  child.once('exit', code => resolve(code ?? 1));
+});
 
 const stop = signal => {
   if (!child.killed) child.kill(signal);

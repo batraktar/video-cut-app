@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getStartupPlan } from './startupPlan.js';
+import { getNpmInvocation, getStartupPlan } from './startupPlan.js';
 
 describe('local startup plan', () => {
   it('starts only the API when the editor is already running', () => {
@@ -20,6 +20,24 @@ describe('local startup plan', () => {
     expect(getStartupPlan({ appAlreadyRunning: false, apiAlreadyRunning: false })).toEqual({
       missingServices: ['web', 'api'],
       runArgs: ['run', 'dev:all']
+    });
+  });
+
+  it('runs npm.cmd through cmd.exe on Windows', () => {
+    expect(getNpmInvocation({
+      platform: 'win32',
+      runArgs: ['run', 'dev:all'],
+      comSpec: 'C:\\Windows\\System32\\cmd.exe'
+    })).toEqual({
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      args: ['/d', '/c', 'npm.cmd run dev:all']
+    });
+  });
+
+  it('runs npm directly on macOS', () => {
+    expect(getNpmInvocation({ platform: 'darwin', runArgs: ['run', 'server'] })).toEqual({
+      command: 'npm',
+      args: ['run', 'server']
     });
   });
 });

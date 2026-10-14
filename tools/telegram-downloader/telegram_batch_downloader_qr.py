@@ -21,9 +21,12 @@ from telethon import TelegramClient
 from telethon.errors import (
     ChannelPrivateError,
     PasswordHashInvalidError,
+    PhoneCodeInvalidError,
+    PhoneNumberInvalidError,
     RPCError,
     SessionPasswordNeededError,
 )
+from qr_utils import qr_box_size
 
 # Як отримати API_ID та API_HASH:
 # 1) Перейдіть на https://my.telegram.org
@@ -152,7 +155,7 @@ class PromptDialog(ctk.CTkToplevel):
 
 
 class QRLoginDialog(ctk.CTkToplevel):
-    def __init__(self, master: ctk.CTk) -> None:
+    def __init__(self, master: ctk.CTk, on_phone_login) -> None:
         super().__init__(master)
         self.title("Telegram QR авторизація")
         self.resizable(False, False)
@@ -178,7 +181,12 @@ class QRLoginDialog(ctk.CTkToplevel):
         self.qr_label.grid(row=2, column=0, padx=20, pady=10)
 
         self.expires_label = ctk.CTkLabel(self, text="")
-        self.expires_label.grid(row=3, column=0, padx=20, pady=(0, 20), sticky="ew")
+        self.expires_label.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="ew")
+
+        self.phone_login_button = ctk.CTkButton(
+            self, text="Не сканується? Увійти за номером телефону", command=on_phone_login
+        )
+        self.phone_login_button.grid(row=4, column=0, padx=20, pady=(0, 20), sticky="ew")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.grab_set()
@@ -191,15 +199,15 @@ class QRLoginDialog(ctk.CTkToplevel):
         qr = qrcode.QRCode(
             version=None,
             error_correction=qrcode.constants.ERROR_CORRECT_M,
-            box_size=10,
-            border=3,
+            box_size=1,
+            border=4,
         )
         qr.add_data(url)
         qr.make(fit=True)
+        qr.box_size = qr_box_size(len(qr.get_matrix()))
         image: Image.Image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-        image = image.resize((320, 320))
 
-        self._qr_image = ctk.CTkImage(light_image=image, dark_image=image, size=(320, 320))
+        self._qr_image = ctk.CTkImage(light_image=image, dark_image=image, size=image.size)
         self.qr_label.configure(image=self._qr_image, text="")
         self.expires_label.configure(text=f"QR активний до: {expires_text}" if expires_text else "")
         self.deiconify()
@@ -226,6 +234,8 @@ class TelegramBatchDownloader(ctk.CTk):
         self._mapping_lock = threading.Lock()
         self._global_seen_keys: set[tuple[object, int]] = set()
         self._qr_dialog: Optional[QRLoginDialog] = None
+        self._phone_login_async_event: Optional[asyncio.Event] = None
+        self._auth_loop: Optional[asyncio.AbstractEventLoop] = None
 
         self._build_ui()
         self.after(150, self._process_queue)
@@ -258,7 +268,7 @@ class TelegramBatchDownloader(ctk.CTk):
         self.parallel_entry.grid(row=1, column=1, padx=10, pady=(0, 10), sticky="w")
         self.parallel_entry.insert(0, "10")
 
-        qr_note = ctk.CTkLabel(settings, text="Авторизація: через QR-код, номер телефону не потрібен")
+        qr_note = ctk.CTkLabel(settings, text="Вхід через QR-код або номер телефону")
         qr_note.grid(row=1, column=2, columnspan=2, padx=10, pady=(0, 10), sticky="w")
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
@@ -409,6 +419,8 @@ class TelegramBatchDownloader(ctk.CTk):
         except Exception as exc:
             self._queue.put({"type": "log", "message": f"[ERR] Загальна помилка: {exc}"})
         finally:
+            self._phone_login_async_event = None
+            self._auth_loop = None
             self._queue.put({"type": "qr_close"})
             self._queue.put({"type": "done", "stopped": self._stop_event.is_set()})
 
@@ -576,17 +588,37 @@ class TelegramBatchDownloader(ctk.CTk):
 
         self._queue.put({"type": "log", "message": "[INFO] Створюю QR-код для входу."})
         qr_login = await client.qr_login()
+        phone_login_event = asyncio.Event()
+        self._auth_loop = asyncio.get_running_loop()
+        self._phone_login_async_event = phone_login_event
 
         while not self._stop_event.is_set():
             expires_text = self._format_datetime(qr_login.expires)
             self._queue.put({"type": "qr_show", "url": qr_login.url, "expires": expires_text})
             self._queue.put({"type": "log", "message": "[INFO] QR-код показано. Скануйте його з Telegram на телефоні."})
 
+            wait_task = asyncio.create_task(qr_login.wait(timeout=self._qr_wait_timeout(qr_login.expires)))
+            phone_task = asyncio.create_task(phone_login_event.wait())
+            done, _ = await asyncio.wait((wait_task, phone_task), return_when=asyncio.FIRST_COMPLETED)
+
+            if phone_task in done and wait_task not in done:
+                wait_task.cancel()
+                await asyncio.gather(wait_task, return_exceptions=True)
+                self._queue.put({"type": "qr_close"})
+                await self._ensure_authorized_phone(client)
+                self._phone_login_async_event = None
+                self._auth_loop = None
+                return
+
+            phone_task.cancel()
+            await asyncio.gather(phone_task, return_exceptions=True)
             try:
-                user = await qr_login.wait(timeout=self._qr_wait_timeout(qr_login.expires))
+                user = wait_task.result()
                 name = " ".join(part for part in [getattr(user, "first_name", ""), getattr(user, "last_name", "")] if part).strip()
                 self._queue.put({"type": "qr_close"})
                 self._queue.put({"type": "log", "message": f"[OK] Авторизовано{f' як {name}' if name else ''}."})
+                self._phone_login_async_event = None
+                self._auth_loop = None
                 return
             except asyncio.TimeoutError:
                 if self._stop_event.is_set():
@@ -598,12 +630,43 @@ class TelegramBatchDownloader(ctk.CTk):
             except SessionPasswordNeededError:
                 self._queue.put({"type": "qr_close"})
                 await self._handle_password(client)
+                self._phone_login_async_event = None
+                self._auth_loop = None
                 return
             except RPCError as exc:
                 self._queue.put({"type": "qr_close"})
                 raise ValueError(f"Telegram API під час QR-авторизації: {exc.__class__.__name__}") from exc
 
+        self._phone_login_async_event = None
+        self._auth_loop = None
         raise DownloadStopped("Авторизацію зупинено користувачем.")
+
+    def _request_phone_login(self) -> None:
+        event = self._phone_login_async_event
+        if event is not None and self._auth_loop is not None and self._auth_loop.is_running():
+            self._auth_loop.call_soon_threadsafe(event.set)
+
+    async def _ensure_authorized_phone(self, client: TelegramClient) -> None:
+        phone = await self._request_input("Введіть номер телефону у міжнародному форматі (+380...)", "phone")
+        if not phone:
+            raise ValueError("Номер телефону не введено.")
+        try:
+            await client.send_code_request(phone)
+        except PhoneNumberInvalidError as exc:
+            raise ValueError("Невірний номер телефону.") from exc
+
+        code = await self._request_input("Введіть код, який Telegram надіслав у застосунок", "code")
+        for _ in range(3):
+            try:
+                await client.sign_in(phone=phone, code=code)
+                self._queue.put({"type": "log", "message": "[OK] Авторизовано за номером телефону."})
+                return
+            except PhoneCodeInvalidError:
+                code = await self._request_input("Невірний код. Введіть код ще раз", "code")
+            except SessionPasswordNeededError:
+                await self._handle_password(client)
+                return
+        raise ValueError("Перевищено кількість спроб для коду підтвердження.")
 
     def _qr_wait_timeout(self, expires: datetime) -> float:
         now = datetime.now(expires.tzinfo) if expires.tzinfo else datetime.now()
@@ -704,7 +767,7 @@ class TelegramBatchDownloader(ctk.CTk):
         if not url:
             return
         if self._qr_dialog is None or not self._qr_dialog.winfo_exists():
-            self._qr_dialog = QRLoginDialog(self)
+            self._qr_dialog = QRLoginDialog(self, self._request_phone_login)
         self._qr_dialog.update_qr(url, expires)
 
     def _close_qr_dialog(self) -> None:

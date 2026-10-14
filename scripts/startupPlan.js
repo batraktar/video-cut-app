@@ -13,3 +13,8 @@ export const getStartupPlan = ({ appAlreadyRunning, apiAlreadyRunning }) => {
 
   return { missingServices, runArgs };
 };
+
+export const getNpmInvocation = ({ platform, runArgs, comSpec = 'cmd.exe' }) =>
+  platform === 'win32'
+    ? { command: comSpec, args: ['/d', '/c', `npm.cmd ${runArgs.join(' ')}`] }
+    : { command: 'npm', args: runArgs };
