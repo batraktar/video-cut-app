@@ -26,7 +26,30 @@ from telethon.errors import (
     RPCError,
     SessionPasswordNeededError,
 )
-from qr_utils import qr_box_size
+
+
+def qr_box_size(matrix_size: int, display_size: int = 320) -> int:
+    if matrix_size < 1 or display_size < 1:
+        raise ValueError("matrix_size and display_size must be positive")
+    return max(3, display_size // matrix_size)
+
+
+def append_xlsx_rows(path: Path, rows) -> None:
+    rows = list(rows)
+    if not rows:
+        return
+    if path.exists():
+        workbook = load_workbook(path)
+        sheet = workbook.active
+    else:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "links"
+        sheet.append(["timestamp", "link", "status", "filename", "detail"])
+    for row in rows:
+        sheet.append(list(row))
+    workbook.save(path)
+    workbook.close()
 
 # Як отримати API_ID та API_HASH:
 # 1) Перейдіть на https://my.telegram.org
@@ -232,6 +255,7 @@ class TelegramBatchDownloader(ctk.CTk):
         self._stop_event = threading.Event()
         self._paused = False
         self._mapping_lock = threading.Lock()
+        self._pending_global_xlsx_rows: List[List[str]] = []
         self._global_seen_keys: set[tuple[object, int]] = set()
         self._qr_dialog: Optional[QRLoginDialog] = None
         self._phone_login_async_event: Optional[asyncio.Event] = None
@@ -437,6 +461,8 @@ class TelegramBatchDownloader(ctk.CTk):
         total = len(links)
         completed = 0
         semaphore = asyncio.Semaphore(max_parallel)
+        with self._mapping_lock:
+            self._pending_global_xlsx_rows.clear()
         try:
             await self._ensure_authorized_qr(client)
 
@@ -445,7 +471,6 @@ class TelegramBatchDownloader(ctk.CTk):
             for link in links:
                 key = (link.entity, link.message_id)
                 if key in global_seen:
-                    self._queue.put({"type": "log", "message": f"[SKIP] Вже є у списку: {link.raw}"})
                     self._record_mapping(map_path, link.raw, "already_listed", "", "Already in global list")
                     skipped += 1
                     completed += 1
@@ -468,7 +493,6 @@ class TelegramBatchDownloader(ctk.CTk):
                     if self._stop_event.is_set():
                         return
 
-                    self._queue.put({"type": "log", "message": f"[INFO] Обробка {link.raw}"})
                     self._queue.put({"type": "file_start", "link": link.raw})
 
                     key = (link.entity, link.message_id)
@@ -539,7 +563,6 @@ class TelegramBatchDownloader(ctk.CTk):
                                     progress_callback=progress_callback,
                                 )
                                 filename = Path(saved_path).name if saved_path else ""
-                                self._queue.put({"type": "log", "message": "[OK] Завантажено"})
                                 status = "downloaded"
                                 detail = ""
                                 self._record_mapping(map_path, link.raw, status, filename, detail)
@@ -576,10 +599,16 @@ class TelegramBatchDownloader(ctk.CTk):
                             completed += 1
                             self._queue.put({"type": "progress", "current": completed, "total": total})
 
-            tasks = [asyncio.create_task(process_link(link)) for link in pending_links]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            for offset in range(0, len(pending_links), max_parallel):
+                batch = pending_links[offset:offset + max_parallel]
+                await asyncio.gather(*(process_link(link) for link in batch), return_exceptions=True)
+                if self._stop_event.is_set():
+                    break
         finally:
-            await client.disconnect()
+            try:
+                await asyncio.to_thread(self._flush_global_xlsx_rows)
+            finally:
+                await client.disconnect()
 
     async def _ensure_authorized_qr(self, client: TelegramClient) -> None:
         if await client.is_user_authorized():
@@ -783,6 +812,9 @@ class TelegramBatchDownloader(ctk.CTk):
     def _append_log(self, text: str) -> None:
         self.log_box.configure(state="normal")
         self.log_box.insert("end", text + "\n")
+        line_count = int(self.log_box.index("end-1c").split(".")[0])
+        if line_count > 500:
+            self.log_box.delete("1.0", f"{line_count - 500}.0")
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
@@ -828,13 +860,6 @@ class TelegramBatchDownloader(ctk.CTk):
         sheet.append(["timestamp", "link", "status", "filename", "detail"])
         workbook.save(path)
 
-    def _append_xlsx(self, path: Path, link: str, status: str, filename: str, detail: str) -> None:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        workbook = load_workbook(path)
-        sheet = workbook.active
-        sheet.append([timestamp, link, status, filename, detail])
-        workbook.save(path)
-
     def _ensure_global_map_headers(self) -> None:
         if not GLOBAL_MAP_MD.exists():
             self._write_mapping_header(GLOBAL_MAP_MD)
@@ -847,7 +872,18 @@ class TelegramBatchDownloader(ctk.CTk):
         self._ensure_global_map_headers()
         self._append_mapping(GLOBAL_MAP_MD, link, status, filename, detail)
         self._append_csv(GLOBAL_MAP_CSV, link, status, filename, detail)
-        self._append_xlsx(GLOBAL_MAP_XLSX, link, status, filename, detail)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._pending_global_xlsx_rows.append([timestamp, link, status, filename, detail])
+
+    def _flush_global_xlsx_rows(self) -> None:
+        with self._mapping_lock:
+            rows, self._pending_global_xlsx_rows = self._pending_global_xlsx_rows, []
+        if not rows:
+            return
+        try:
+            append_xlsx_rows(GLOBAL_MAP_XLSX, rows)
+        except Exception as exc:
+            self._queue.put({"type": "log", "message": f"[ERR] Не вдалося оновити links_map.xlsx: {exc}"})
 
     def _record_mapping(self, map_path: Path, link: str, status: str, filename: str, detail: str) -> None:
         with self._mapping_lock:
