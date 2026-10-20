@@ -35,10 +35,13 @@ from ultralytics import YOLO
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from pyngrok import ngrok
+from pyngrok.exception import PyngrokNgrokError
 
 # Set it in Colab before this cell:
 # os.environ["NGROK_AUTHTOKEN"] = "your-token"
 NGROK_AUTHTOKEN = os.environ.get("NGROK_AUTHTOKEN", "").strip()
+if not NGROK_AUTHTOKEN:
+    raise RuntimeError("Set NGROK_AUTHTOKEN to a valid ngrok Agent Authtoken before running this notebook.")
 
 # Uploaded videos must outlive the /predict request while they wait in the queue.
 UPLOAD_DIR = Path("/content/video-cut-ai-uploads")
@@ -263,10 +266,18 @@ def get_result(task_id):
 
 
 # NGROK
-if NGROK_AUTHTOKEN:
+try:
     ngrok.set_auth_token(NGROK_AUTHTOKEN)
+    public_tunnel = ngrok.connect(addr="5000", proto="http")
+except PyngrokNgrokError as exc:
+    if "authentication failed" in str(exc).lower() or "authtoken" in str(exc).lower():
+        raise RuntimeError(
+            "ngrok rejected NGROK_AUTHTOKEN. Add a valid Agent Authtoken from "
+            "https://dashboard.ngrok.com/get-started/your-authtoken in Colab Secrets."
+        ) from None
+    raise
 
-public_url = ngrok.connect(addr="5000", proto="http").public_url
+public_url = public_tunnel.public_url
 print("Public URL:", public_url)
 
 threading.Thread(
