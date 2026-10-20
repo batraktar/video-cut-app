@@ -266,7 +266,7 @@ def get_result(task_id):
 if NGROK_AUTHTOKEN:
     ngrok.set_auth_token(NGROK_AUTHTOKEN)
 
-public_url = ngrok.connect(5000).public_url
+public_url = ngrok.connect(addr="5000", proto="http").public_url
 print("Public URL:", public_url)
 
 threading.Thread(

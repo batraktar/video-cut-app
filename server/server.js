@@ -224,7 +224,8 @@ const getConfig = async () => {
       googleCredentialsConfigured,
       clipchampDriveRemote: DEFAULT_CLIPCHAMP_DRIVE_REMOTE,
       clipchampDriveFolderId: DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID,
-      clipchampFolderPrefix: DEFAULT_CLIPCHAMP_FOLDER_PREFIX
+      clipchampFolderPrefix: DEFAULT_CLIPCHAMP_FOLDER_PREFIX,
+      clipchampUploadToDrive: true
     };
   }
   try {
@@ -257,6 +258,7 @@ const getConfig = async () => {
         typeof payload.clipchampFolderPrefix === 'string'
           ? payload.clipchampFolderPrefix
           : DEFAULT_CLIPCHAMP_FOLDER_PREFIX,
+      clipchampUploadToDrive: payload.clipchampUploadToDrive !== false,
       sheetId:
         ENV_SHEET_ID || (typeof payload.sheetId === 'string' ? payload.sheetId : DEFAULT_SHEET_ID),
       sheetGid:
@@ -290,6 +292,7 @@ const getConfig = async () => {
       clipchampDriveRemote: DEFAULT_CLIPCHAMP_DRIVE_REMOTE,
       clipchampDriveFolderId: DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID,
       clipchampFolderPrefix: DEFAULT_CLIPCHAMP_FOLDER_PREFIX,
+      clipchampUploadToDrive: true,
       sheetId: DEFAULT_SHEET_ID,
       sheetGid: DEFAULT_SHEET_GID,
       sheetName: DEFAULT_SHEET_NAME,
@@ -343,6 +346,10 @@ const saveConfig = async updates => {
       typeof updates.clipchampFolderPrefix === 'string'
         ? updates.clipchampFolderPrefix
         : current.clipchampFolderPrefix,
+    clipchampUploadToDrive:
+      typeof updates.clipchampUploadToDrive === 'boolean'
+        ? updates.clipchampUploadToDrive
+        : current.clipchampUploadToDrive,
     sheetId: typeof updates.sheetId === 'string' ? updates.sheetId : current.sheetId,
     sheetGid: typeof updates.sheetGid === 'string' ? updates.sheetGid : current.sheetGid,
     sheetName: typeof updates.sheetName === 'string' ? updates.sheetName : current.sheetName,

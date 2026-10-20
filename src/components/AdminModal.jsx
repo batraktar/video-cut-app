@@ -391,7 +391,7 @@ export default function AdminModal({
                 Clipchamp Drive export
               </div>
               <div className="mt-1 text-[10px] text-slate-400">
-                Створює нову датовану теку, рендерить відео із суфіксами та додає links_map.csv і логи.
+                Рендерить відео з links_map.csv та логом у датовану теку на комп’ютері; за бажанням копіює її в Google Drive.
               </div>
             </div>
             <span className="shrink-0 text-[10px] text-slate-400">
@@ -402,12 +402,29 @@ export default function AdminModal({
                   : 'Нічого не обрано'}
             </span>
           </div>
+          <label className="mt-3 flex items-center gap-2 text-xs font-semibold">
+            <input
+              type="checkbox"
+              checked={adminConfig.clipchampUploadToDrive !== false}
+              onChange={e =>
+                onConfigChange(prev => ({ ...prev, clipchampUploadToDrive: e.target.checked }))
+              }
+              className="h-4 w-4 accent-sky-600"
+            />
+            Також завантажувати готову теку в Google Drive
+          </label>
+          {adminConfig.clipchampUploadToDrive === false && (
+            <p className="mt-1 text-[10px] text-slate-400">
+              Вимкнено: результат залишиться в `Clipchamp_exports` у робочій папці локального сервера.
+            </p>
+          )}
           <div className="mt-3 grid gap-2 md:grid-cols-5">
             <label className="flex flex-col gap-1 text-[10px] text-slate-400">
               Назва rclone-підключення (remote)
               <input
                 type="text"
                 value={adminConfig.clipchampDriveRemote || ''}
+                disabled={adminConfig.clipchampUploadToDrive === false}
                 onChange={e =>
                   onConfigChange(prev => ({ ...prev, clipchampDriveRemote: e.target.value }))
                 }
@@ -420,6 +437,7 @@ export default function AdminModal({
               <input
                 type="text"
                 value={adminConfig.clipchampDriveFolderId || ''}
+                disabled={adminConfig.clipchampUploadToDrive === false}
                 onChange={e =>
                   onConfigChange(prev => ({ ...prev, clipchampDriveFolderId: e.target.value }))
                 }

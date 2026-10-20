@@ -44,4 +44,20 @@ describe('Clipchamp Drive export', () => {
     expect(command).toContain("'lqd-kotyk-helper:Clipchamp_2026-06-29_16-07-09'");
     expect(command).toContain("--drive-root-folder-id 'folder-id'");
   });
+
+  it('builds a local-only export without requiring or invoking rclone', () => {
+    const command = buildClipchampExportCommand({
+      localDir: 'Clipchamp_exports/session',
+      folderName: 'session',
+      uploadToDrive: false,
+      processingLines: ['ffmpeg test'],
+      linksRows: [{ link: '', filename: 'video.mp4' }],
+      manifest: { files: [{ filename: 'video.mp4' }] }
+    });
+
+    expect(command).toContain("mkdir -p 'Clipchamp_exports/session'");
+    expect(command).toContain('ffmpeg test');
+    expect(command).toContain('CLIPCHAMP_EXPORT_DONE');
+    expect(command).not.toContain('rclone');
+  });
 });

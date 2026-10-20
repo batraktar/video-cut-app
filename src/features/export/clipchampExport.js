@@ -52,6 +52,7 @@ export const buildClipchampExportCommand = ({
   localDir,
   remoteName,
   rootFolderId,
+  uploadToDrive = true,
   folderName,
   processingLines,
   linksRows,
@@ -74,14 +75,20 @@ export const buildClipchampExportCommand = ({
     'set -o pipefail',
     `mkdir -p ${shellQuote(localDir)}`,
     `mkdir -p ${shellQuote(`${localDir}/_tmp`)}`,
-    `rclone mkdir ${shellQuote(remoteTarget)} ${rcloneRoot}`,
+    ...(uploadToDrive ? [`rclone mkdir ${shellQuote(remoteTarget)} ${rcloneRoot}`] : []),
     ...(processingLines || []),
     `printf %s ${shellQuote(linksCsv)} > ${shellQuote(linksPath)}`,
     `printf %s ${shellQuote(videosMarkdown)} > ${shellQuote(markdownPath)}`,
     `printf %s ${shellQuote(manifestJson)} > ${shellQuote(manifestPath)}`,
-    `rclone copy ${shellQuote(localDir)} ${shellQuote(remoteTarget)} ${rcloneRoot} --exclude ${shellQuote('_tmp/**')} --exclude ${shellQuote('upload.log')} --progress 2>&1 | tee ${shellQuote(logPath)}`,
-    `printf '\\nDrive parent: %s\\nFolder: %s\\n' ${shellQuote(parentUrl)} ${shellQuote(folderName)} | tee -a ${shellQuote(logPath)}`,
-    `rclone copyto ${shellQuote(logPath)} ${shellQuote(`${remoteTarget}/upload.log`)} ${rcloneRoot}`,
-    `printf 'CLIPCHAMP_EXPORT_DONE\\n%s\\n%s\\n' ${shellQuote(parentUrl)} ${shellQuote(folderName)}`
+    ...(uploadToDrive
+      ? [
+          `rclone copy ${shellQuote(localDir)} ${shellQuote(remoteTarget)} ${rcloneRoot} --exclude ${shellQuote('_tmp/**')} --exclude ${shellQuote('upload.log')} --progress 2>&1 | tee ${shellQuote(logPath)}`,
+          `printf '\\nDrive parent: %s\\nFolder: %s\\n' ${shellQuote(parentUrl)} ${shellQuote(folderName)} | tee -a ${shellQuote(logPath)}`,
+          `rclone copyto ${shellQuote(logPath)} ${shellQuote(`${remoteTarget}/upload.log`)} ${rcloneRoot}`,
+          `printf 'CLIPCHAMP_EXPORT_DONE\\n%s\\n%s\\n' ${shellQuote(parentUrl)} ${shellQuote(folderName)}`
+        ]
+      : [
+          `printf 'CLIPCHAMP_EXPORT_DONE\\nLocal folder: %s\\n' ${shellQuote(localDir)}`
+        ])
   ].join('\n');
 };

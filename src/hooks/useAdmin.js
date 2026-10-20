@@ -878,7 +878,8 @@ export default function useAdmin({
 
     const remoteName = String(adminConfig.clipchampDriveRemote || '').trim().replace(/:+$/, '');
     const rootFolderId = extractDriveFolderId(adminConfig.clipchampDriveFolderId);
-    if (!remoteName || !rootFolderId) {
+    const uploadToDrive = adminConfig.clipchampUploadToDrive !== false;
+    if (uploadToDrive && (!remoteName || !rootFolderId)) {
       showHud("Заповніть Clipchamp Drive remote і Folder ID");
       return;
     }
@@ -888,7 +889,7 @@ export default function useAdmin({
       createdAt,
       adminConfig.clipchampFolderPrefix || 'Clipchamp'
     );
-    const localDir = `.clipchamp_exports/${folderName}`;
+    const localDir = `Clipchamp_exports/${folderName}`;
     const processingLines = [];
     const linksRows = [];
     const manifestFiles = [];
@@ -1007,14 +1008,14 @@ export default function useAdmin({
       localDir,
       remoteName,
       rootFolderId,
+      uploadToDrive,
       folderName,
       processingLines,
       linksRows,
       manifest: {
         createdAt: createdAt.toISOString(),
         folderName,
-        driveFolderId: rootFolderId,
-        remote: remoteName,
+        ...(uploadToDrive ? { driveFolderId: rootFolderId, remote: remoteName } : {}),
         files: manifestFiles,
         skipped
       }
@@ -1037,6 +1038,7 @@ export default function useAdmin({
     adminConfig.clipchampDriveFolderId,
     adminConfig.clipchampDriveRemote,
     adminConfig.clipchampFolderPrefix,
+    adminConfig.clipchampUploadToDrive,
     buildFfmpegLinesFor,
     edits,
     fetchAdminJson,
