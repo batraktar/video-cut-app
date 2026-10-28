@@ -217,7 +217,6 @@ export default function App() {
   const spacePanRef = useRef(false);
   const viewportHoverRef = useRef(false);
   const lastTimeUiUpdateRef = useRef(0);
-  const lastSegmentDragUpdateRef = useRef(0);
 
   // Dragging state
   const isDragging = useRef(false);
@@ -230,7 +229,6 @@ export default function App() {
   const segmentPreviewRef = useRef(new Map());
   const trimPreviewRef = useRef(null);
   const cropPreviewRef = useRef(null);
-  const lastDragTimeRef = useRef(0);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -1554,7 +1552,8 @@ export default function App() {
   };
   const handleSeek = e => {
     if (!videoRef.current || !currentEdit.meta.duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
+    const rect = timelineRef.current?.getBoundingClientRect();
+    if (!rect || !rect.width) return;
     const x = e.clientX - rect.left;
     const perc = Math.max(0, Math.min(1, x / rect.width));
     videoRef.current.currentTime = perc * currentEdit.meta.duration;
@@ -1717,7 +1716,7 @@ export default function App() {
     if (!el) return;
     const newEl = { ...el, id: Date.now().toString(), x: el.x + 2, y: el.y + 2 };
     updateCurrentEdit({ elements: [...currentEdit.elements, newEl], selectedId: newEl.id });
-    showHud("Прямокутник дубльовано");
+    showHud(`${el.type === 'circle' ? 'Коло' : 'Прямокутник'} дубльовано`);
   };
 
   const copyAttributes = el => {
@@ -1857,6 +1856,41 @@ export default function App() {
       saveHistory
     );
   };
+  const splitSegmentAtTime = id => {
+    const mode = getActiveSegmentMode();
+    const segments = getSegmentsForMode(currentEdit, mode);
+    const splitTime = videoRef.current?.currentTime ?? currentTime;
+    const target = id
+      ? segments.find(segment => segment.id === id)
+      : segments.find(segment => splitTime > segment.start + 0.1 && splitTime < segment.end - 0.1);
+    if (!target || splitTime <= target.start + 0.1 || splitTime >= target.end - 0.1) {
+      showHud('Поставте курсор усередині сегмента');
+      return;
+    }
+
+    const splitId = `${target.id}-split-${Date.now()}`;
+    const nextSegments = segments.flatMap(segment =>
+      segment.id === target.id
+        ? [
+            { ...segment, end: splitTime },
+            { ...segment, id: splitId, start: splitTime }
+          ]
+        : [segment]
+    );
+    updateCurrentEdit({
+      segmentSets: updateSegmentsForMode(currentEdit, mode, nextSegments),
+      segments: nextSegments
+    });
+    setActiveSegmentId(splitId);
+    showHud('Сегмент розділено');
+  };
+  const toggleSegmentSnowForId = id => {
+    const mode = getActiveSegmentMode();
+    const target = getSegmentsForMode(currentEdit, mode).find(seg => seg.id === id);
+    if (!target) return;
+    updateSegment(id, { isSnow: !target.isSnow });
+    showHud(target.isSnow ? 'Snow знято' : 'Snow додано');
+  };
   const updateElementRef = useRef(updateElement);
   useEffect(() => {
     updateElementRef.current = updateElement;
@@ -1873,6 +1907,7 @@ export default function App() {
       segmentSets: updateSegmentsForMode(currentEdit, mode, nextSegments),
       segments: nextSegments
     });
+    if (activeSegmentId === id) setActiveSegmentId(null);
   }
   useEditorHotkeys({
     hotkeys,
@@ -1900,10 +1935,13 @@ export default function App() {
     cycleSegmentChannelAtTime,
     cycleSeekStep,
     addSegmentFromDraft,
+    splitSegmentAtTime,
     addRect,
+    addCircle,
     updateElement,
     setSegmentDraft,
     toggleSegmentSnowAtTime,
+    toggleSegmentSnowForId,
     togglePlayback,
     copyAttributes,
     pasteAttributes,
@@ -1913,21 +1951,6 @@ export default function App() {
     activeSegmentId,
     showHud
   });
-
-  const moveSegment = (id, direction) => {
-    const mode = getActiveSegmentMode();
-    const segments = getSegmentsForMode(currentEdit, mode);
-    const index = segments.findIndex(seg => seg.id === id);
-    const targetIndex = index + direction;
-    if (index < 0 || targetIndex < 0 || targetIndex >= segments.length) return;
-    const next = [...segments];
-    const [item] = next.splice(index, 1);
-    next.splice(targetIndex, 0, item);
-    updateCurrentEdit({
-      segmentSets: updateSegmentsForMode(currentEdit, mode, next),
-      segments: next
-    });
-  };
 
   const clearSegments = () => {
     const mode = getActiveSegmentMode();
@@ -2028,9 +2051,6 @@ export default function App() {
     const handleMouseMove = e => {
       if (!isDragging.current) return;
       e.preventDefault();
-      const now = performance.now();
-      if (now - lastDragTimeRef.current < 12) return;
-      lastDragTimeRef.current = now;
       const target = dragTarget.current;
       if (!target) return;
       const clientX = e.clientX;
@@ -2067,9 +2087,6 @@ export default function App() {
 
         if (target.type === 'segment') {
           if (!timelineRef.current || !edit.meta.duration) return;
-          const nowSeg = performance.now();
-          if (nowSeg - lastSegmentDragUpdateRef.current < 33) return;
-          lastSegmentDragUpdateRef.current = nowSeg;
           const rect = timelineRef.current.getBoundingClientRect();
           const deltaTime =
             ((clientX - startPos.current.x) / rect.width) * edit.meta.duration;
@@ -2201,10 +2218,15 @@ export default function App() {
 
     const handleMouseUp = () => {
       const target = dragTarget.current;
-      isDragging.current = false;
+      if (dragRafRef.current) {
+        cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      const pendingDragUpdate = dragPendingRef.current;
       dragPendingRef.current = null;
+      if (pendingDragUpdate) pendingDragUpdate();
+      isDragging.current = false;
       dragTarget.current = null;
-      lastDragTimeRef.current = 0;
       if (target?.type === 'element') {
         const latest = elementPreviewRef.current.get(target.id);
         if (latest) {
@@ -2546,7 +2568,8 @@ export default function App() {
     segmentEndRef,
     addSegmentFromDraft,
     updateSegment,
-    moveSegment,
+    splitSegmentAtTime,
+    toggleSegmentSnowForId,
     removeSegment,
     activeSegmentId,
     setActiveSegmentId,

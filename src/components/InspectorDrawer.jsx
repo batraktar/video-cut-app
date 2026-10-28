@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { PanelRightOpen, Pin, PinOff, Scissors, SlidersHorizontal } from 'lucide-react';
+import { Pin, PinOff } from 'lucide-react';
 
 const PIN_STORAGE_KEY = 'videoCut.inspectorPinned.v1';
 const WIDTH_STORAGE_KEY = 'videoCut.inspectorWidth.v1';
@@ -16,7 +16,7 @@ const loadWidth = () => {
   return Number.isFinite(saved) ? Math.min(440, Math.max(280, saved)) : 300;
 };
 
-export default function InspectorDrawer({ isDark, segmentCount = 0, children }) {
+export default function InspectorDrawer({ isDark, children }) {
   const [pinned, setPinned] = useState(() => loadBoolean(PIN_STORAGE_KEY, false));
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -75,12 +75,10 @@ export default function InspectorDrawer({ isDark, segmentCount = 0, children }) 
     document.body.style.userSelect = 'none';
   };
 
-  const railButton = 'relative flex h-10 w-10 items-center justify-center rounded-md transition';
-
   return (
     <div
       className="relative z-40 hidden h-full shrink-0 lg:block"
-      style={{ width: pinned ? width + 52 : 52 }}
+      style={{ width: pinned ? width + 12 : 12 }}
       onMouseEnter={cancelClose}
       onMouseLeave={scheduleClose}
       onFocusCapture={() => {
@@ -100,7 +98,7 @@ export default function InspectorDrawer({ isDark, segmentCount = 0, children }) 
         className={`absolute bottom-0 top-0 z-10 flex flex-col border-l shadow-[-18px_0_36px_rgba(0,0,0,0.28)] transition-[opacity,transform] duration-200 ${
           isDark ? 'border-slate-700 bg-slate-900' : 'border-slate-300 bg-slate-50'
         } ${open ? 'translate-x-0 opacity-100' : 'translate-x-2 pointer-events-none opacity-0'}`}
-        style={{ right: 52, width }}
+        style={{ right: 12, width }}
         aria-hidden={!open}
         inert={!open}
         onMouseEnter={cancelClose}
@@ -132,41 +130,19 @@ export default function InspectorDrawer({ isDark, segmentCount = 0, children }) 
       </section>
 
       <aside
-        className={`absolute bottom-0 right-0 top-0 flex w-[52px] flex-col items-center gap-1 border-l px-1.5 py-2 ${
+        className={`absolute bottom-0 right-0 top-0 flex w-3 items-stretch border-l ${
           isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-300 bg-white'
         }`}
       >
         <button
           type="button"
           onClick={cancelClose}
-          className={`${railButton} ${open ? 'bg-cyan-500/15 text-cyan-400' : 'text-slate-400 hover:bg-slate-700/20'}`}
-          title="Відкрити інспектор"
+          className="group flex w-full flex-1 items-center justify-center"
+          title="Навести або натиснути, щоб відкрити інспектор"
+          aria-label="Відкрити інспектор"
         >
-          <SlidersHorizontal className="h-4 w-4" />
+          <span className={`h-8 w-0.5 rounded-full transition-all group-hover:w-1 ${open ? 'bg-cyan-400' : isDark ? 'bg-slate-500 group-hover:bg-cyan-400' : 'bg-slate-300 group-hover:bg-cyan-500'}`} />
         </button>
-        <button
-          type="button"
-          onClick={cancelClose}
-          className={`${railButton} text-slate-400 hover:bg-slate-700/20`}
-          title="Сегменти"
-        >
-          <Scissors className="h-4 w-4" />
-          {segmentCount > 0 && (
-            <span className="absolute right-0 top-0 min-w-4 rounded-full bg-emerald-500 px-1 text-center text-[8px] font-bold text-white">
-              {segmentCount > 99 ? '99+' : segmentCount}
-            </span>
-          )}
-        </button>
-        <div className="my-1 h-px w-8 bg-slate-600/40" />
-        <button
-          type="button"
-          onClick={() => setPinned(value => !value)}
-          className={`${railButton} ${pinned ? 'bg-cyan-500/15 text-cyan-400' : 'text-slate-400 hover:bg-slate-700/20'}`}
-          title={pinned ? 'Відкріпити панель' : 'Закріпити панель'}
-        >
-          {pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
-        </button>
-        <PanelRightOpen className="mt-auto h-4 w-4 text-slate-600" />
       </aside>
     </div>
   );

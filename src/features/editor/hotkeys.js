@@ -18,8 +18,10 @@ export const DEFAULT_HOTKEYS = {
   panHold: [{ code: 'Space', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   togglePlayback: [{ code: 'Space', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   addRect: [{ code: 'KeyN', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
+  addCircle: [{ code: 'KeyO', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   toggleElementChannel: [{ code: 'KeyL', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   addSegment: [{ code: 'Enter', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
+  splitSegment: [{ code: 'KeyX', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   toggleSnowSegment: [{ code: 'KeyS', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   cycleSegmentChannel: [{ code: 'KeyC', ctrlKey: false, shiftKey: true, altKey: false, metaKey: false }],
   deleteSegment: [
@@ -60,11 +62,13 @@ export const HOTKEY_DEFS = [
   { id: 'markStart', label: 'Поставити початок (елемент/сегмент)' },
   { id: 'markEnd', label: 'Поставити кінець (елемент/сегмент)' },
   { id: 'addSegment', label: 'Додати сегмент з чернетки' },
+  { id: 'splitSegment', label: 'Розділити сегмент у позиції курсора' },
   { id: 'toggleSnowSegment', label: 'Snow: перемкнути сегмент під курсором' },
   { id: 'cycleSegmentChannel', label: 'Сегмент: змінити канал' },
   { id: 'deleteSegment', label: 'Сегмент: видалити' },
   { id: 'cycleSegmentMode', label: 'Перемкнути канал сегментів' },
   { id: 'addRect', label: 'Додати прямокутник' },
+  { id: 'addCircle', label: 'Додати коло' },
   { id: 'toggleElementChannel', label: 'Канал елемента: all/active' },
   { id: 'outline', label: 'Контур (елемент)' },
   { id: 'fill', label: 'Заливка (елемент)' },
@@ -159,8 +163,35 @@ export const serializeHotkey = hotkey => {
 
 export const eventMatchesHotkey = (event, hotkey) => {
   if (!hotkey) return false;
+  const codeKey = /^Key[A-Z]$/.test(hotkey.code)
+    ? hotkey.code.slice(3).toLowerCase()
+    : /^Digit\d$/.test(hotkey.code)
+      ? hotkey.code.slice(5)
+      : ({
+          Space: ' ',
+          Enter: 'Enter',
+          Escape: 'Escape',
+          Backspace: 'Backspace',
+          Delete: 'Delete',
+          Slash: '/',
+          Backslash: '\\',
+          Comma: ',',
+          Period: '.',
+          Minus: '-',
+          Equal: '=',
+          BracketLeft: '[',
+          BracketRight: ']',
+          Semicolon: ';',
+          Quote: "'",
+          Backquote: '`',
+          ArrowLeft: 'ArrowLeft',
+          ArrowRight: 'ArrowRight',
+          ArrowUp: 'ArrowUp',
+          ArrowDown: 'ArrowDown'
+        })[hotkey.code];
   return (
-    event.code === hotkey.code &&
+    (event.code === hotkey.code ||
+      (codeKey && String(event.key || '').toLowerCase() === codeKey.toLowerCase())) &&
     Boolean(event.ctrlKey) === Boolean(hotkey.ctrlKey) &&
     Boolean(event.shiftKey) === Boolean(hotkey.shiftKey) &&
     Boolean(event.altKey) === Boolean(hotkey.altKey) &&

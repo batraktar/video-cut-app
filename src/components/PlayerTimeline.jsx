@@ -1,7 +1,18 @@
-import React, { memo } from 'react';
+import React, { memo, useRef, useState } from 'react';
 import { Pause, Play } from 'lucide-react';
+import SegmentContextMenu from './SegmentContextMenu';
 
 const SNOW_ICON_DATA = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23bae6fd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2v20M5 5l14 14M19 5L5 19M2 12h20'/%3E%3C/svg%3E";
+
+const formatSegmentClock = value => {
+  const seconds = Math.max(0, Math.floor(Number(value) || 0));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+    : `${minutes}:${String(remainder).padStart(2, '0')}`;
+};
 
 function PlayerTimeline({
   isFocusMode,
@@ -37,8 +48,18 @@ function PlayerTimeline({
   visibleElements,
   activeSegmentId,
   onSelectSegment,
-  onCycleSegmentChannel
+  onCycleSegmentChannel,
+  onSplitSegment,
+  onToggleSegmentSnow,
+  onRemoveSegment,
+  hotkeys
 }) {
+  const isPlayheadDragging = useRef(false);
+  const [segmentContextMenu, setSegmentContextMenu] = useState(null);
+  const currentSegmentIndex = activeSegments.findIndex(
+    segment => currentTime >= segment.start && currentTime <= segment.end
+  );
+
   return (
     <>
       <div
@@ -187,8 +208,12 @@ function PlayerTimeline({
                   onMouseDown={
                     isActive
                       ? e => {
-                          onSelectSegment?.(seg.id);
+                          if (e.button !== 0) {
+                            e.stopPropagation();
+                            return;
+                          }
                           onDragStart(e, { type: 'segment', id: seg.id, action: 'move' });
+                          onSelectSegment?.(seg.id);
                         }
                       : undefined
                   }
@@ -196,7 +221,14 @@ function PlayerTimeline({
                   onContextMenu={e => {
                     if (!isActive) return;
                     e.preventDefault();
-                    onCycleSegmentChannel?.(seg.id);
+                    e.stopPropagation();
+                    onSelectSegment?.(seg.id);
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setSegmentContextMenu({
+                      segment: seg,
+                      left: Math.max(8, Math.min(e.clientX, window.innerWidth - 228)),
+                      top: Math.max(8, Math.min(e.clientY || rect.bottom, window.innerHeight - 252))
+                    });
                   }}
                 >
                   {isActive && (
@@ -204,6 +236,10 @@ function PlayerTimeline({
                       <div
                         className={`absolute -left-1 top-1/2 -translate-y-1/2 w-2 h-2 border rounded-full cursor-ew-resize ${activeSegmentMeta.handle}`}
                         onMouseDown={e => {
+                          if (e.button !== 0) {
+                            e.stopPropagation();
+                            return;
+                          }
                           onSelectSegment?.(seg.id);
                           onDragStart(e, { type: 'segment', id: seg.id, action: 'resize-start' });
                         }}
@@ -211,6 +247,10 @@ function PlayerTimeline({
                       <div
                         className={`absolute -right-1 top-1/2 -translate-y-1/2 w-2 h-2 border rounded-full cursor-ew-resize ${activeSegmentMeta.handle}`}
                         onMouseDown={e => {
+                          if (e.button !== 0) {
+                            e.stopPropagation();
+                            return;
+                          }
                           onSelectSegment?.(seg.id);
                           onDragStart(e, { type: 'segment', id: seg.id, action: 'resize-end' });
                         }}
@@ -220,6 +260,18 @@ function PlayerTimeline({
                 </div>
               );
             })
+          )}
+          {segmentContextMenu && (
+            <SegmentContextMenu
+              {...segmentContextMenu}
+              hotkeys={hotkeys}
+              currentTime={currentTime}
+              onSplit={onSplitSegment}
+              onToggleSnow={onToggleSegmentSnow}
+              onCycleChannel={onCycleSegmentChannel}
+              onRemove={onRemoveSegment}
+              onClose={() => setSegmentContextMenu(null)}
+            />
           )}
           {visibleElements.map(el => {
             const label = Array.isArray(el.channelMode)
@@ -242,50 +294,83 @@ function PlayerTimeline({
               </div>
             );
           })}
-          <div className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10 pointer-events-none shadow-[0_0_5px_rgba(239,68,68,0.8)]" style={{ left: `${getPct(currentTime)}%` }}>
-            <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-3 h-3 bg-red-500 transform rotate-45"></div>
+          <div
+            className="absolute top-0 bottom-0 w-4 -translate-x-1/2 z-30 cursor-ew-resize touch-none"
+            style={{ left: `${getPct(currentTime)}%` }}
+            onPointerDown={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              isPlayheadDragging.current = true;
+              event.currentTarget.setPointerCapture(event.pointerId);
+              onSeek(event);
+            }}
+            onPointerMove={event => {
+              if (isPlayheadDragging.current) onSeek(event);
+            }}
+            onPointerUp={event => {
+              isPlayheadDragging.current = false;
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+            }}
+            onLostPointerCapture={() => {
+              isPlayheadDragging.current = false;
+            }}
+          >
+            <div className="absolute top-0 bottom-0 left-1/2 w-0.5 -translate-x-1/2 bg-red-500 pointer-events-none shadow-[0_0_5px_rgba(239,68,68,0.8)]" />
+            <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-3 h-3 bg-red-500 transform rotate-45 pointer-events-none"></div>
           </div>
         </div>
         {segmentTotal > 0 && (
-          <div
-            className={`relative mt-3 h-10 rounded-lg border select-none cursor-pointer overflow-hidden ${isFocusMode
-              ? 'bg-black/20 border-white/20 backdrop-blur-sm'
-              : isDark
-                ? 'bg-slate-900 border-slate-700'
-                : 'bg-white border-slate-200'
-              }`}
-            onMouseDown={onSegmentSeek}
-            title="Навігація по сегментах"
-          >
-            <div
-              className={`absolute inset-0 ${isFocusMode ? 'bg-black/10' : isDark ? 'bg-slate-800/40' : 'bg-slate-50'
-                }`}
-            />
-            {activeSegments.map((seg, index) => {
-              const segLen = Math.max(0, seg.end - seg.start);
-              const left =
-                segmentTotal > 0
-                  ? (getSegmentTotal(activeSegments.slice(0, index)) / segmentTotal) * 100
-                  : 0;
-              const width = segmentTotal > 0 ? (segLen / segmentTotal) * 100 : 0;
-              return (
-                <div
-                  key={seg.id}
-                  className={`absolute top-2 bottom-2 rounded border relative ${activeSegmentMeta.track}`}
-                  style={{ left: `${left}%`, width: `${width}%` }}
-                >
-                </div>
-              );
-            })}
-            <div
-              className="absolute top-0 bottom-0 w-0.5 bg-rose-500 z-10 pointer-events-none shadow-[0_0_5px_rgba(244,63,94,0.8)]"
-              style={{
-                left: `${segmentTotal > 0 ? (segmentOffset / segmentTotal) * 100 : 0}%`
-              }}
-            >
-              <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-rose-500 transform rotate-45"></div>
+          <section className="mt-2" aria-label="Навігація по сегментах">
+            <div className={`mb-1 flex items-center justify-between gap-3 text-[10px] ${isDark || isFocusMode ? 'text-slate-300' : 'text-slate-500'}`}>
+              <span className="font-semibold">Час сегментів без проміжків</span>
+              <span className="shrink-0 font-mono">
+                {currentSegmentIndex >= 0
+                  ? `Сегмент ${currentSegmentIndex + 1}/${activeSegments.length}`
+                  : 'Поза сегментами'}
+                {' · '}
+                {formatSegmentClock(segmentOffset)} / {formatSegmentClock(segmentTotal)}
+              </span>
             </div>
-          </div>
+            <div
+              className={`relative h-6 rounded border select-none cursor-pointer overflow-hidden ${isFocusMode
+                ? 'bg-black/20 border-white/20 backdrop-blur-sm'
+                : isDark
+                  ? 'bg-slate-900 border-slate-700'
+                  : 'bg-white border-slate-200'
+                }`}
+              onMouseDown={onSegmentSeek}
+              title="Клацніть, щоб перейти по сегментах так, ніби проміжків між ними немає"
+            >
+              {activeSegments.map((seg, index) => {
+                const segLen = Math.max(0, seg.end - seg.start);
+                const left =
+                  segmentTotal > 0
+                    ? (getSegmentTotal(activeSegments.slice(0, index)) / segmentTotal) * 100
+                    : 0;
+                const width = segmentTotal > 0 ? (segLen / segmentTotal) * 100 : 0;
+                return (
+                  <div
+                    key={seg.id}
+                    title={`Сегмент ${index + 1}: ${formatSegmentClock(seg.start)}–${formatSegmentClock(seg.end)}`}
+                    className={`absolute inset-y-1 rounded border ${activeSegmentMeta.track} ${
+                      currentSegmentIndex === index ? 'ring-1 ring-white shadow-sm' : ''
+                    }`}
+                    style={{ left: `${left}%`, width: `${width}%` }}
+                  />
+                );
+              })}
+              <div
+                className="absolute top-0 bottom-0 w-0.5 bg-rose-500 z-10 pointer-events-none shadow-[0_0_5px_rgba(244,63,94,0.8)]"
+                style={{
+                  left: `${segmentTotal > 0 ? (segmentOffset / segmentTotal) * 100 : 0}%`
+                }}
+              >
+                <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-rose-500 transform rotate-45"></div>
+              </div>
+            </div>
+          </section>
         )}
       </div>
       <video ref={processingVideoRef} src={processingSrc || activeVideo?.url || undefined} className="hidden" />

@@ -70,7 +70,8 @@ export default function WorkspaceArea({
   segmentEndRef,
   addSegmentFromDraft,
   updateSegment,
-  moveSegment,
+  splitSegmentAtTime,
+  toggleSegmentSnowForId,
   removeSegment,
   activeSegmentId,
   setActiveSegmentId,
@@ -138,6 +139,13 @@ export default function WorkspaceArea({
               : onDragStart
           }
           onSelectElement={onSelectElement}
+          hotkeys={hotkeys}
+          copiedAttributes={copiedAttributes}
+          duplicateElement={duplicateElement}
+          copyAttributes={copyAttributes}
+          pasteAttributes={pasteAttributes}
+          deleteElement={deleteElement}
+          updateElement={updateElement}
           onFocusResizeStart={onFocusResizeStart}
           visibleElements={visibleElements}
           canvasTool={canvasTool}
@@ -145,7 +153,7 @@ export default function WorkspaceArea({
         </main>
 
         {!isFocusMode && (
-          <InspectorDrawer isDark={isDark} segmentCount={activeSegments.length}>
+          <InspectorDrawer isDark={isDark}>
 	          <PropertiesPanel
 	          isDark={isDark}
 	          activeVideo={activeVideo}
@@ -168,7 +176,8 @@ export default function WorkspaceArea({
             segmentEndRef={segmentEndRef}
             addSegmentFromDraft={addSegmentFromDraft}
             updateSegment={updateSegment}
-            moveSegment={moveSegment}
+            splitSegmentAtTime={splitSegmentAtTime}
+            toggleSegmentSnowForId={toggleSegmentSnowForId}
             removeSegment={removeSegment}
             activeSegmentId={activeSegmentId}
             setActiveSegmentId={setActiveSegmentId}
@@ -226,6 +235,10 @@ export default function WorkspaceArea({
           activeSegmentId={activeSegmentId}
           onSelectSegment={setActiveSegmentId}
           onCycleSegmentChannel={onCycleSegmentChannel}
+          onSplitSegment={splitSegmentAtTime}
+          onToggleSegmentSnow={toggleSegmentSnowForId}
+          onRemoveSegment={removeSegment}
+          hotkeys={hotkeys}
         />
       </div>
 	    </div>

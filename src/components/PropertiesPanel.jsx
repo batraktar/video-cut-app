@@ -1,7 +1,5 @@
 import React, { memo, useMemo, useState } from 'react';
 import {
-  ArrowDown,
-  ArrowUp,
   BoxSelect,
   Circle,
   Clipboard,
@@ -18,6 +16,7 @@ import { Select } from 'antd';
 import { SEGMENT_MODES } from '../lib/editorConstants';
 import HotkeysSettings from './HotkeysSettings';
 import SnowSettings from './SnowSettings';
+import SegmentContextMenu from './SegmentContextMenu';
 import { formatHotkeyList, normalizeHotkeys } from '../features/editor/hotkeys';
 
 function SegmentTimeInput({ value, onCommit, className, onFocus }) {
@@ -104,7 +103,8 @@ function PropertiesPanel({
   segmentEndRef,
   addSegmentFromDraft,
   updateSegment,
-  moveSegment,
+  splitSegmentAtTime,
+  toggleSegmentSnowForId,
   removeSegment,
   activeSegmentId,
   setActiveSegmentId,
@@ -124,9 +124,20 @@ function PropertiesPanel({
   snowSpeed,
   setSnowSpeed
 }) {
+  const [segmentContextMenu, setSegmentContextMenu] = useState(null);
   const normalizedHotkeys = useMemo(() => normalizeHotkeys(hotkeys), [hotkeys]);
   const markStartHint = formatHotkeyList(normalizedHotkeys.markStart);
   const markEndHint = formatHotkeyList(normalizedHotkeys.markEnd);
+  const splitHint = formatHotkeyList(normalizedHotkeys.splitSegment);
+  const canSplitSegment = segment =>
+    currentTime > segment.start + 0.1 && currentTime < segment.end - 0.1;
+  const selectedSegment = activeSegments.find(segment => segment.id === activeSegmentId);
+  const splitCandidate =
+    (selectedSegment && canSplitSegment(selectedSegment) && selectedSegment) ||
+    activeSegments.find(canSplitSegment);
+  const canSplitAtCurrentTime = Boolean(
+    splitCandidate && currentTime > splitCandidate.start + 0.1 && currentTime < splitCandidate.end - 0.1
+  );
 
   return (
     <div
@@ -260,6 +271,18 @@ function PropertiesPanel({
         >
           Додати сегмент
         </button>
+        <button
+          type="button"
+          onClick={() => splitSegmentAtTime(splitCandidate?.id)}
+          disabled={!canSplitAtCurrentTime}
+          className={`w-full py-2 rounded-lg border text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${isDark
+            ? 'border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700'
+            : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+          }`}
+          title={`Поставте червоний курсор усередині сегмента, щоб розділити його в цій точці (${splitHint})`}
+        >
+          Розділити тут <kbd className="ml-1 rounded bg-black/10 px-1 py-0.5 font-mono text-[10px]">{splitHint}</kbd>
+        </button>
         <div className="space-y-2">
           {activeSegments.length === 0 && (
             <div className="text-[10px] text-slate-400">Немає сегментів для експорту</div>
@@ -271,7 +294,14 @@ function PropertiesPanel({
               onClick={() => setActiveSegmentId?.(seg.id)}
               onContextMenu={e => {
                 e.preventDefault();
-                onCycleSegmentChannel?.(seg.id);
+                e.stopPropagation();
+                setActiveSegmentId?.(seg.id);
+                const rect = e.currentTarget.getBoundingClientRect();
+                setSegmentContextMenu({
+                  segment: seg,
+                  left: Math.max(8, Math.min(e.clientX, window.innerWidth - 228)),
+                  top: Math.max(8, Math.min(e.clientY || rect.bottom, window.innerHeight - 252))
+                });
               }}
             >
               <div className="text-slate-400 w-7 text-right">{idx + 1}</div>
@@ -303,20 +333,6 @@ function PropertiesPanel({
                 title="Snow: додасть суфікс _snow для експорту цих сегментів"
               >
                 <Snowflake className="w-3 h-3" />
-              </button>
-              <button
-                onClick={() => moveSegment(seg.id, -1)}
-                className="px-1 text-slate-400 hover:text-slate-700"
-                title="Вгору"
-              >
-                <ArrowUp className="w-3 h-3" />
-              </button>
-              <button
-                onClick={() => moveSegment(seg.id, 1)}
-                className="px-1 text-slate-400 hover:text-slate-700"
-                title="Вниз"
-              >
-                <ArrowDown className="w-3 h-3" />
               </button>
               <button
                 onClick={() => removeSegment(seg.id)}
@@ -575,6 +591,18 @@ function PropertiesPanel({
         snowSpeed={snowSpeed}
         setSnowSpeed={setSnowSpeed}
       />
+      {segmentContextMenu && (
+        <SegmentContextMenu
+          {...segmentContextMenu}
+          hotkeys={hotkeys}
+          currentTime={currentTime}
+          onSplit={splitSegmentAtTime}
+          onToggleSnow={toggleSegmentSnowForId}
+          onCycleChannel={onCycleSegmentChannel}
+          onRemove={removeSegment}
+          onClose={() => setSegmentContextMenu(null)}
+        />
+      )}
     </div>
   );
 }

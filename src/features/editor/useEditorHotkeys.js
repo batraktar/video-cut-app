@@ -47,7 +47,9 @@ export default function useEditorHotkeys(params) {
         cycleSegmentChannelAtTime,
         cycleSeekStep,
         addSegmentFromDraft,
+        splitSegmentAtTime,
         addRect,
+        addCircle,
         updateElement,
         setSegmentDraft,
         toggleSegmentSnowAtTime,
@@ -151,6 +153,13 @@ export default function useEditorHotkeys(params) {
         return;
       }
 
+      if (eventMatchesAction(e, hotkeys, 'addCircle')) {
+        e.preventDefault();
+        addCircle();
+        showHud("Додано коло");
+        return;
+      }
+
       if (eventMatchesAction(e, hotkeys, 'toggleElementChannel')) {
         e.preventDefault();
         if (!currentEdit.selectedId) {
@@ -184,19 +193,27 @@ export default function useEditorHotkeys(params) {
         return;
       }
 
+      if (eventMatchesAction(e, hotkeys, 'splitSegment')) {
+        e.preventDefault();
+        splitSegmentAtTime();
+        return;
+      }
+
       if (eventMatchesAction(e, hotkeys, 'toggleSnowSegment')) {
         e.preventDefault();
-        toggleSegmentSnowAtTime?.();
+        if (activeSegmentId) toggleSegmentSnowForId?.(activeSegmentId);
+        else toggleSegmentSnowAtTime?.();
         return;
       }
       if (eventMatchesAction(e, hotkeys, 'cycleSegmentChannel')) {
         e.preventDefault();
+        if (activeSegmentId) {
+          cycleSegmentChannelForId?.(activeSegmentId);
+          return;
+        }
         if (cycleSegmentChannelAtTime) {
           cycleSegmentChannelAtTime();
           return;
-        }
-        if (activeSegmentId) {
-          cycleSegmentChannelForId?.(activeSegmentId);
         }
         return;
       }
@@ -238,12 +255,15 @@ export default function useEditorHotkeys(params) {
         return;
       }
 
-      if (eventMatchesAction(e, hotkeys, 'deleteElement')) {
-        if (currentEdit.selectedId) {
-          e.preventDefault();
-          deleteElement(currentEdit.selectedId);
-          showHud("Елемент видалено");
-        }
+      if (eventMatchesAction(e, hotkeys, 'deleteSegment') && activeSegmentId) {
+        e.preventDefault();
+        deleteSegment(activeSegmentId);
+        return;
+      }
+      if (eventMatchesAction(e, hotkeys, 'deleteElement') && currentEdit.selectedId) {
+        e.preventDefault();
+        deleteElement(currentEdit.selectedId);
+        showHud("Елемент видалено");
         return;
       }
       if (eventMatchesAction(e, hotkeys, 'deleteSegment')) {
@@ -252,7 +272,6 @@ export default function useEditorHotkeys(params) {
           deleteSegmentAtTime();
           return;
         }
-        if (activeSegmentId) deleteSegment(activeSegmentId);
         return;
       }
 

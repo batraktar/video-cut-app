@@ -1,6 +1,6 @@
 # Project index
 
-- `src/`: React/Vite editor UI. `src/App.jsx` composes the editor; hooks own playlist and admin state; `src/features/` and `src/lib/` hold workflows and helpers.
+- `src/`: React/Vite editor UI. `src/App.jsx` composes the editor; `PlayerViewport.jsx` handles canvas object interactions, `PlayerTimeline.jsx` handles timeline and segment interactions, `SegmentContextMenu.jsx` shares segment actions with the properties panel, and `src/features/editor/hotkeys.js` defines configurable editor shortcuts. Hooks own playlist and admin state; `src/features/` and `src/lib/` hold workflows and helpers.
 - `server/`: local Express + SQLite API; Google Sheets and file-job integration. Start with `server/server.js`.
 - `src/features/export/clipchampExport.js` plus `src/hooks/useAdmin.js` build queued local Clipchamp exports; Admin settings can optionally upload the rendered folder via rclone to Google Drive.
 - `colab_ngrok_inference_fixed.ipynb` is the maintained Colab inference notebook; its ngrok cell must use current `pyngrok` connect options.
