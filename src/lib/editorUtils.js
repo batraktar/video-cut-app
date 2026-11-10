@@ -1,4 +1,4 @@
-import { DEFAULT_SHEET_GID, DEFAULT_SHEET_ID, SEGMENT_MODES } from './editorConstants';
+import { DEFAULT_SHEET_GID, DEFAULT_SHEET_ID, SEGMENT_MODES, STORAGE_KEYS } from './editorConstants';
 
 export const getSheetCsvUrl = (config) => {
   const id = config?.sheetId || DEFAULT_SHEET_ID;
@@ -33,11 +33,51 @@ export const normalizeCropPx = (crop, meta) => {
 // Серверна версія (не localhost) живе в ОКРЕМОМУ просторі ключів сховища:
 // стан локальної апки (Mac-шляхи, локальні плейлисти) не повинен просочуватись
 // у серверний редактор через спільний localStorage браузера.
+const isLocalHost = () =>
+  typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+
 const storageKey = key =>
-  typeof window !== 'undefined' &&
-  !/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname)
-    ? `${key}__srv`
-    : key;
+  typeof window !== 'undefined' && !isLocalHost() ? `${key}__srv` : key;
+
+// --- Автосейв правок на сервер (лише серверна версія редактора) ---
+// Стан нарізки має жити на сервері: сервер тримає поточну копію та знімки
+// історії, тож чистка браузера чи робота з іншого пристрою не втрачають правки.
+const editsSavedAtKey = () => `${storageKey(STORAGE_KEYS.edits)}.savedAt`;
+let editsPushTimer = null;
+const pushEditsToServer = value => {
+  if (typeof window === 'undefined' || isLocalHost()) return;
+  clearTimeout(editsPushTimer);
+  editsPushTimer = setTimeout(() => {
+    const savedAt = Date.now();
+    fetch('/ui/edits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ edits: value, savedAt })
+    })
+      .then(res => {
+        if (res.ok) {
+          try { localStorage.setItem(editsSavedAtKey(), String(savedAt)); } catch { /* ignore */ }
+        }
+      })
+      .catch(() => {});
+  }, 1200);
+};
+
+export const pullServerEdits = async () => {
+  if (typeof window === 'undefined' || isLocalHost()) return null;
+  try {
+    const res = await fetch('/ui/edits', { cache: 'no-store' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || !data.edits || !data.savedAt) return null;
+    const localAt = Number(localStorage.getItem(editsSavedAtKey()) || 0);
+    if (Number(data.savedAt) <= localAt) return null;
+    localStorage.setItem(editsSavedAtKey(), String(data.savedAt));
+    return data.edits;
+  } catch {
+    return null;
+  }
+};
 
 export const loadFromStorage = (key, fallback) => {
   if (typeof window === 'undefined') return fallback;
@@ -56,6 +96,7 @@ export const saveToStorage = (key, value) => {
   } catch {
     return;
   }
+  if (key === STORAGE_KEYS.edits) pushEditsToServer(value);
 };
 
 export const parseNumericInput = value => {

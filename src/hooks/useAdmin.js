@@ -1399,21 +1399,28 @@ export default function useAdmin({
   // чи пропустити їх і не палити час Colab на повторну обробку.
   const askAboutAlreadyCut = useCallback(
     targets => {
+      // Спочатку короткі: вони встигають навіть у коротку Colab-сесію,
+      // а довгі не блокують усю чергу. Тривалість — з метаданих правок.
+      const durationOf = item => {
+        const d = Number(edits?.[item.id]?.meta?.duration);
+        return Number.isFinite(d) && d > 0 ? d : Number.POSITIVE_INFINITY;
+      };
+      const byDuration = list => [...list].sort((a, b) => durationOf(a) - durationOf(b));
       const alreadyCut = targets.filter(item => {
         const edit = edits?.[item.id];
         if (!edit) return false;
         const sets = normalizeSegmentSets(edit.segmentSets, edit.segments, edit.segmentMode || 'digital');
         return Object.values(sets).some(list => Array.isArray(list) && list.length > 0);
       });
-      if (alreadyCut.length === 0) return targets;
+      if (alreadyCut.length === 0) return byDuration(targets);
       const names = alreadyCut.slice(0, 6).map(item => item.name || item.fileKey || item.id).join(', ');
       const more = alreadyCut.length > 6 ? ` і ще ${alreadyCut.length - 6}` : '';
       const redo = window.confirm(
         `Уже нарізані відео: ${alreadyCut.length} (${names}${more}).\n\nПерерізати їх заново? Нові канали додадуться, наявні сегменти перезапишуться.\n\nOK — перерізати всі\nСкасувати — пропустити вже нарізані`
       );
-      if (redo) return targets;
+      if (redo) return byDuration(targets);
       const skip = new Set(alreadyCut.map(item => item.id));
-      return targets.filter(item => !skip.has(item.id));
+      return byDuration(targets.filter(item => !skip.has(item.id)));
     },
     [edits]
   );
@@ -2080,6 +2087,45 @@ export default function useAdmin({
     }
   }, [adminAiLastProvider, adminAiQueue, runAdminAiSegments, runAdminAiSegmentsNgrok, runAdminAiSegmentsRemote, showHud]);
 
+  // Забрати готові нарізки, які серверний пайплайн зробив у фоні
+  // (Telegram → черга → Colab), і застосувати їх до відео за назвами файлів.
+  const pullServerCutResults = useCallback(async () => {
+    let data;
+    try {
+      const res = await fetch('/ui/cut-results', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = await res.json();
+    } catch {
+      showHud('Не вдалося забрати результати з сервера');
+      return;
+    }
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (items.length === 0) {
+      showHud('На сервері ще немає готових нарізок');
+      return;
+    }
+    const byName = new Map();
+    playlist.forEach(video => {
+      if (video.name) byName.set(video.name, video);
+      if (video.fileKey) byName.set(video.fileKey, video);
+    });
+    const toApply = [];
+    let skipped = 0;
+    for (const item of items) {
+      const video = byName.get(item.name);
+      if (!video) { skipped += 1; continue; }
+      const raw = normalizeRemoteAiSegments(item.result || {});
+      const allowedModes = new Set(getExpectedModesForAi(video));
+      const segments = Object.fromEntries(Object.entries(raw).filter(([mode, values]) =>
+        allowedModes.has(mode) && Array.isArray(values) && values.length > 0
+      ));
+      if (countAiSegments(segments) === 0) { skipped += 1; continue; }
+      toApply.push({ id: video.id, sourcePath: video.sourcePath || '', segments });
+    }
+    if (toApply.length > 0) applyAiSegments(toApply);
+    showHud(`Серверні нарізки: застосовано ${toApply.length}, пропущено ${skipped}`);
+  }, [applyAiSegments, getExpectedModesForAi, playlist, showHud]);
+
   const runAdminLogoDetection = useCallback(async () => {
     const selected = playlist.filter(p => p.checked);
     const targets = selected.length > 0 ? selected : activeVideo ? [activeVideo] : [];
@@ -2680,6 +2726,7 @@ export default function useAdmin({
     saveCoverTrainingExample,
     pingAdminAiRemote,
     stopAdminAi,
+    pullServerCutResults,
     retryAdminAiFailed,
     refreshAdminAiBatch,
     stopAdminJob,

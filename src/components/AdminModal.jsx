@@ -77,6 +77,7 @@ export default function AdminModal({
   onPingAiRemote,
   onCheckAiDrive,
   onStopAi,
+  onPullServerResults,
   onRetryAiFailed,
   onRefreshAiBatch,
   onConfirmAiSheetSuggestion,
@@ -270,6 +271,14 @@ export default function AdminModal({
               >
                 📋 Панель сервера
               </a>
+            )}
+            {isRemoteHost && (
+              <button
+                onClick={onPullServerResults}
+                className="mt-2 ml-2 inline-block rounded bg-sky-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-sky-700"
+              >
+                ⬇ Забрати нарізки з сервера
+              </button>
             )}
           </div>
           <button

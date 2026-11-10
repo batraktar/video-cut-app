@@ -1484,7 +1484,7 @@ app.post('/sheet/sync-file-names', async (req, res) => {
 
     const [parseResult, preFinalResult] = await Promise.all([
       sheetsClient.spreadsheets.values.get({ spreadsheetId, range: "'parse'!A:B" }),
-      sheetsClient.spreadsheets.values.get({ spreadsheetId, range: "'pre-final'!A:H" })
+      sheetsClient.spreadsheets.values.get({ spreadsheetId, range: "'pre-final'!A:K" })
     ]);
     const plan = buildTelegramSheetSyncPlan(
       parseResult.data.values || [],
@@ -1512,9 +1512,14 @@ app.post('/sheet/sync-file-names', async (req, res) => {
       });
     }
     if (plan.preFinalNames.length > 0) {
+      // Колонку з назвами файлів шукаємо за заголовком (file_name/tg_file_name),
+      // а не пишемо жорстко в H: H у таблиці — date_video, і затирати дати назвами не можна.
+      const pfHeaders = (preFinalResult.data.values?.[0] || []).map(h => String(h ?? '').trim().toLowerCase());
+      const fileColIdx = pfHeaders.indexOf('tg_file_name') >= 0 ? pfHeaders.indexOf('tg_file_name') : pfHeaders.indexOf('file_name');
+      const fileCol = fileColIdx >= 0 ? String.fromCharCode(65 + fileColIdx) : 'H';
       await sheetsClient.spreadsheets.values.update({
         spreadsheetId,
-        range: `'pre-final'!H2:H${plan.preFinalNames.length + 1}`,
+        range: `'pre-final'!${fileCol}2:${fileCol}${plan.preFinalNames.length + 1}`,
         valueInputOption: 'RAW',
         requestBody: { values: plan.preFinalNames }
       });

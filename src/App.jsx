@@ -25,6 +25,7 @@ import {
   resolveSegmentModeFromMeta,
   resolveSegmentModeFromSuffix,
   resolveSuffixFromMode,
+  pullServerEdits,
   saveToStorage,
   updateSegmentsForMode
 } from './lib/editorUtils';
@@ -466,6 +467,18 @@ export default function App() {
     return meta ? [meta] : [];
   };
   const savedEditsRef = useRef(loadFromStorage(STORAGE_KEYS.edits, {}));
+
+  // Серверна копія правок свіжіша за локальну — підтягнути її:
+  // стан нарізки живе на сервері, браузер — лише кеш.
+  useEffect(() => {
+    let cancelled = false;
+    pullServerEdits()
+      .then(serverEdits => {
+        if (!cancelled && serverEdits) setEdits(serverEdits);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // --- STATE MANAGEMENT ---
   const pushToHistory = (newEdit, oldEdit) => {
@@ -1009,6 +1022,7 @@ export default function App() {
     saveCoverTrainingExample,
     pingAdminAiRemote,
     stopAdminAi,
+    pullServerCutResults,
     retryAdminAiFailed,
     refreshAdminAiBatch,
     stopAdminJob,
@@ -2689,6 +2703,7 @@ export default function App() {
         onPingAiRemote={pingAdminAiRemote}
         onCheckAiDrive={checkAdminAiDrive}
         onStopAi={stopAdminAi}
+        onPullServerResults={pullServerCutResults}
         onRetryAiFailed={retryAdminAiFailed}
         onRefreshAiBatch={refreshAdminAiBatch}
         onConfirmAiSheetSuggestion={confirmAiSheetSuggestion}
