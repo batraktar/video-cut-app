@@ -262,6 +262,14 @@ export default function AdminModal({
           <div>
             <div className="text-base font-bold">Адмінка</div>
             <div className="text-[10px] text-slate-400">Локальний сервер • Job runner • Sheet map</div>
+            {isRemoteHost && (
+              <a
+                href="/panel"
+                className="mt-2 inline-block rounded bg-indigo-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-indigo-700"
+              >
+                📋 Панель сервера
+              </a>
+            )}
           </div>
           <button
             onClick={onClose}

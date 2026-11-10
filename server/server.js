@@ -614,7 +614,7 @@ const proxyAiRemote = (req, res, remotePath) => {
     const base = new URL(req.params.remote);
     const host = base.hostname.toLowerCase();
     if (base.protocol !== 'https:' || base.username || base.password || base.port ||
-        !(/(^|\.)trycloudflare\.com$|(^|\.)ngrok-free\.app$/.test(host))) {
+        !(/(^|\.)trycloudflare\.com$|(^|\.)ngrok-free\.app$|(^|\.)batraktar\.pp\.ua$/.test(host))) {
       return res.status(400).json({ ok: false, error: 'unsupported_ai_tunnel_url' });
     }
     target = new URL(remotePath, `${base.origin}/`);
