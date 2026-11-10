@@ -15,7 +15,6 @@ import {
   getFileKeyCounts,
   getSegmentOffsetForTime,
   getSegmentsForMode,
-  getSuffixForSegmentMode,
   getTimeForSegmentOffset,
   loadFromStorage,
   mergeChannelLists,
@@ -118,8 +117,7 @@ export default function App() {
   const [focusSideOpen, setFocusSideOpen] = useState(false);
   const [overwriteOutputs, setOverwriteOutputs] = useState(false);
   const [serverHydrationState, setServerHydrationState] = useState('pending');
-  const [importPickerRequest, setImportPickerRequest] = useState(0);
-  const [importPickerHandled, setImportPickerHandled] = useState(0);
+  const [adminRequestedTab, setAdminRequestedTab] = useState('files');
   const [autoSyncAllowed, setAutoSyncAllowed] = useState(false);
   const hotkeyCaptureRef = useRef(false);
   const serverHydratedRef = useRef(false);
@@ -226,6 +224,7 @@ export default function App() {
   const dragRafRef = useRef(null);
   const dragPendingRef = useRef(null);
   const elementPreviewRef = useRef(new Map());
+  const rotationDragRef = useRef(null);
   const segmentPreviewRef = useRef(new Map());
   const trimPreviewRef = useRef(null);
   const cropPreviewRef = useRef(null);
@@ -652,7 +651,7 @@ export default function App() {
     if (!video) return [];
     const baseChannels =
       Array.isArray(video.channels) && video.channels.length > 0
-        ? video.channels
+        ? video.channels.filter(channel => channel.sheetRow)
         : [
           {
             mode:
@@ -704,7 +703,7 @@ export default function App() {
   const getVideoChannelVariants = video => {
     if (!video) return [];
     if (Array.isArray(video.channels) && video.channels.length > 0) {
-      return video.channels.map(channel => ({
+      return video.channels.filter(channel => channel.sheetRow).map(channel => ({
         ...video,
         channelMode: channel.mode,
         suffix: channel.suffix || resolveSuffixFromMode(channel.sheetMode, channel.sheetCameraType),
@@ -714,14 +713,7 @@ export default function App() {
         sheetLink: channel.sheetLink || video.sheetLink || ''
       }));
     }
-    const fallbackMode = getSegmentModeForVideo(video);
-    return [
-      {
-        ...video,
-        channelMode: fallbackMode,
-        suffix: video.suffix || resolveSuffixFromMode(video.sheetMode, video.sheetCameraType)
-      }
-    ];
+    return [];
   };
   const toggleNotRelevant = id => {
     if (!id) return;
@@ -736,19 +728,10 @@ export default function App() {
     return isAnalogVariant(video);
   };
   const ensureModeVariants = (video, variants, edit) => {
-    const existing = new Set(variants.map(item => item.channelMode).filter(Boolean));
-    const next = [...variants];
-    SEGMENT_MODES.forEach(mode => {
-      if (existing.has(mode.id)) return;
-      const segs = getSegmentsForMode(edit, mode.id);
-      if (!Array.isArray(segs) || segs.length === 0) return;
-      next.push({
-        ...video,
-        channelMode: mode.id,
-        suffix: getSuffixForSegmentMode(mode.id)
-      });
+    return variants.filter(variant => {
+      const segments = getSegmentsForMode(edit, variant.channelMode);
+      return Array.isArray(segments) && segments.length > 0;
     });
-    return next;
   };
   const buildFfmpegCommand = () => {
     if (!activeVideo) return '';
@@ -765,7 +748,7 @@ export default function App() {
     const outputDirs = new Set();
     const tmpDirs = new Set();
     let finalRenameLine = null;
-    const splitBySnow = (segments, mode) => {
+    const splitBySnow = segments => {
       const supportsSnow = true;
       if (!Array.isArray(segments) || segments.length === 0) {
         return { supportsSnow, hasAny: false, normal: [], snow: [] };
@@ -776,11 +759,9 @@ export default function App() {
     };
     variants.forEach(variant => {
       const modeSegments = getSegmentsForMode(edit, variant.channelMode);
-      const { supportsSnow, hasAny, normal, snow } = splitBySnow(modeSegments, variant.channelMode);
+      const { supportsSnow, hasAny, normal, snow } = splitBySnow(modeSegments);
       const jobs = [];
-      if (!hasAny) {
-        jobs.push({ video: variant, segmentsOverride: undefined, labelSuffix: '' });
-      } else {
+      if (hasAny) {
         if (normal.length > 0) jobs.push({ video: variant, segmentsOverride: normal, labelSuffix: '' });
         if (supportsSnow && snow.length > 0) {
           jobs.push({
@@ -868,9 +849,7 @@ export default function App() {
         const normal = Array.isArray(modeSegments) ? modeSegments.filter(seg => !seg?.isSnow) : [];
         const hasAny = Array.isArray(modeSegments) && modeSegments.length > 0;
         const jobs = [];
-        if (!hasAny) {
-          jobs.push({ video: variant, segmentsOverride: undefined, labelSuffix: '' });
-        } else {
+        if (hasAny) {
           if (normal.length > 0) jobs.push({ video: variant, segmentsOverride: normal, labelSuffix: '' });
           if (supportsSnow && snow.length > 0) {
             jobs.push({
@@ -994,8 +973,12 @@ export default function App() {
     adminAiLoading,
     adminAiStats,
     adminAiQueue,
+    adminAiSheetSuggestions,
     adminAiLastRequestAt,
     adminAiLastError,
+    adminAiDriveCheck,
+    adminAiColabMode,
+    setAdminAiColabMode,
     adminAiRemoteState,
     adminLogoLoading,
     adminLogoStats,
@@ -1006,6 +989,8 @@ export default function App() {
     selectAdminJob,
     pingAdmin,
     loadAdminSheet,
+    confirmAiSheetSuggestion,
+    dismissAiSheetSuggestion,
     loadAdminSnapshot,
     saveAdminConfig,
     syncSheetFromCsv,
@@ -1017,12 +1002,17 @@ export default function App() {
     runAdminFfmpeg,
     runAdminClipchampExport,
     runAdminAiSegments,
+    runAdminAiSegmentsNgrok,
     runAdminAiSegmentsRemote,
+    checkAdminAiDrive,
     runAdminLogoDetection,
+    saveCoverTrainingExample,
     pingAdminAiRemote,
     stopAdminAi,
     retryAdminAiFailed,
+    refreshAdminAiBatch,
     stopAdminJob,
+    retryIncompleteAdminJob,
     pickAdminFolder,
     addVideosFromServer,
     queueServerRename
@@ -1035,6 +1025,8 @@ export default function App() {
     currentId,
     setCurrentId,
     activeVideo,
+    videoRef,
+    currentTime,
     savedEditsRef,
     showHud,
     prefs: {
@@ -1102,7 +1094,7 @@ export default function App() {
       const data = await loadAdminSnapshot();
       if (cancelled) return;
       if (data?.ok && data.payload && hasServerSnapshotData(data.payload)) {
-        applySnapshotPayloadRef.current?.(data.payload);
+        applySnapshotPayloadRef.current?.(data.payload, { preserveLocalSelection: true });
         serverHydratedRef.current = true;
         setServerHydrationState('done');
         return;
@@ -1281,7 +1273,7 @@ export default function App() {
     playlist.forEach(video => {
       if (!video?.fileKey) return;
       const modes = Array.isArray(video.channels) && video.channels.length > 0
-        ? video.channels.map(channel => channel.mode).filter(Boolean)
+        ? video.channels.filter(channel => channel.sheetRow).map(channel => channel.mode).filter(Boolean)
         : [getSegmentModeForVideo(video)];
       if (!map.has(video.fileKey)) map.set(video.fileKey, new Set());
       const set = map.get(video.fileKey);
@@ -1682,10 +1674,10 @@ export default function App() {
     const newEl = {
       id: Date.now().toString(),
       type: 'circle',
-      x: crop.l + cropW / 2 - 10,
-      y: crop.t + cropH / 2 - 10,
-      w: 20,
-      h: 20,
+      x: crop.l + cropW / 2 - 5,
+      y: crop.t + cropH / 2 - 5,
+      w: 10,
+      h: 10,
       color: '#000000',
       isOutline: true,
       thickness: 1,
@@ -1724,6 +1716,7 @@ export default function App() {
       color: el.color,
       isOutline: el.isOutline,
       thickness: el.thickness,
+      rotation: el.rotation || 0,
       startTime: el.startTime,
       endTime: el.endTime,
       channelMode: el.channelMode || 'all'
@@ -1942,6 +1935,7 @@ export default function App() {
     setSegmentDraft,
     toggleSegmentSnowAtTime,
     toggleSegmentSnowForId,
+    saveCoverTrainingExample,
     togglePlayback,
     copyAttributes,
     pasteAttributes,
@@ -1986,6 +1980,9 @@ export default function App() {
     node.style.top = `${next.y}%`;
     node.style.width = `${next.w}%`;
     node.style.height = `${next.h}%`;
+    if (Number.isFinite(next.rotation)) {
+      node.style.transform = `rotate(${next.rotation}deg)`;
+    }
   };
 
   const applyTrimPreview = (trim, duration) => {
@@ -2144,41 +2141,55 @@ export default function App() {
             const elId = target.id;
             const startEl = startState.current;
             let nextEl = null;
-            if (target.action === 'move') {
+            if (target.action === 'rotate') {
+              const centerX = rect.left + ((startEl.x + startEl.w / 2) / 100) * rect.width;
+              const centerY = rect.top + ((startEl.y + startEl.h / 2) / 100) * rect.height;
+              const pointerAngle = Math.atan2(clientY - centerY, clientX - centerX);
+              const rotationDrag = rotationDragRef.current;
+              const delta = pointerAngle - rotationDrag.lastPointerAngle;
+              const deltaDegrees = ((delta * 180) / Math.PI + 540) % 360 - 180;
+              rotationDrag.lastPointerAngle = pointerAngle;
+              rotationDrag.rotation = (rotationDrag.rotation + deltaDegrees + 360) % 360;
+              nextEl = {
+                x: startEl.x,
+                y: startEl.y,
+                w: startEl.w,
+                h: startEl.h,
+                rotation: rotationDrag.rotation
+              };
+            } else if (target.action === 'move') {
               nextEl = { x: startEl.x + deltaPercX, y: startEl.y + deltaPercY, w: startEl.w, h: startEl.h };
             } else if (target.action === 'resize') {
-              if (target.corner === 'br') {
-                nextEl = {
-                  x: startEl.x,
-                  y: startEl.y,
-                  w: Math.max(2, startEl.w + deltaPercX),
-                  h: Math.max(2, startEl.h + deltaPercY)
-                };
-              }
-              if (target.corner === 'tl') {
-                nextEl = {
-                  w: Math.max(2, startEl.w - deltaPercX),
-                  h: Math.max(2, startEl.h - deltaPercY),
-                  x: startEl.x + deltaPercX,
-                  y: startEl.y + deltaPercY
-                };
-              }
-              if (target.corner === 'tr') {
-                nextEl = {
-                  w: Math.max(2, startEl.w + deltaPercX),
-                  h: Math.max(2, startEl.h - deltaPercY),
-                  x: startEl.x,
-                  y: startEl.y + deltaPercY
-                };
-              }
-              if (target.corner === 'bl') {
-                nextEl = {
-                  w: Math.max(2, startEl.w - deltaPercX),
-                  h: Math.max(2, startEl.h + deltaPercY),
-                  x: startEl.x + deltaPercX,
-                  y: startEl.y
-                };
-              }
+              const rotation = ((Number(startEl.rotation) || 0) * Math.PI) / 180;
+              const dx = clientX - startPos.current.x;
+              const dy = clientY - startPos.current.y;
+              const localDeltaX = ((dx * Math.cos(rotation) + dy * Math.sin(rotation)) / rect.width) * 100;
+              const localDeltaY = ((-dx * Math.sin(rotation) + dy * Math.cos(rotation)) / rect.height) * 100;
+              const handle = target.corner;
+              const right = handle.includes('r');
+              const left = handle.includes('l');
+              const bottom = handle.includes('b');
+              const top = handle.includes('t');
+              const changesWidth = left || right;
+              const changesHeight = top || bottom;
+              const nextW = changesWidth
+                ? Math.max(2, startEl.w + (right ? localDeltaX : -localDeltaX))
+                : startEl.w;
+              const nextH = changesHeight
+                ? Math.max(2, startEl.h + (bottom ? localDeltaY : -localDeltaY))
+                : startEl.h;
+              const shiftLocalX = (right ? 1 : -1) * (nextW - startEl.w) * rect.width / 200;
+              const shiftLocalY = (bottom ? 1 : -1) * (nextH - startEl.h) * rect.height / 200;
+              const centerX = ((startEl.x + startEl.w / 2) / 100) * rect.width;
+              const centerY = ((startEl.y + startEl.h / 2) / 100) * rect.height;
+              const nextCenterX = centerX + shiftLocalX * Math.cos(rotation) - shiftLocalY * Math.sin(rotation);
+              const nextCenterY = centerY + shiftLocalX * Math.sin(rotation) + shiftLocalY * Math.cos(rotation);
+              nextEl = {
+                x: (nextCenterX / rect.width) * 100 - nextW / 2,
+                y: (nextCenterY / rect.height) * 100 - nextH / 2,
+                w: nextW,
+                h: nextH
+              };
             }
             if (nextEl) {
               elementPreviewRef.current.set(elId, nextEl);
@@ -2247,6 +2258,7 @@ export default function App() {
           updateCurrentEdit({ crop: cropPreviewRef.current }, true);
         }
       }
+      rotationDragRef.current = null;
       trimPreviewRef.current = null;
       cropPreviewRef.current = null;
       segmentPreviewRef.current.clear();
@@ -2286,6 +2298,15 @@ export default function App() {
     if (targetInfo.type === 'element') {
       const el = currentEdit.elements.find(e => e.id === targetInfo.id);
       startState.current = { ...el };
+      if (targetInfo.action === 'rotate' && overlayRef.current) {
+        const rect = overlayRef.current.getBoundingClientRect();
+        const centerX = rect.left + ((el.x + el.w / 2) / 100) * rect.width;
+        const centerY = rect.top + ((el.y + el.h / 2) / 100) * rect.height;
+        rotationDragRef.current = {
+          lastPointerAngle: Math.atan2(e.clientY - centerY, e.clientX - centerX),
+          rotation: ((Number(el.rotation) || 0) % 360 + 360) % 360
+        };
+      }
       updateCurrentEdit({ selectedId: targetInfo.id }, false);
       elementPreviewRef.current.delete(targetInfo.id);
     } else if (targetInfo.type === 'segment') {
@@ -2490,16 +2511,16 @@ export default function App() {
         false
       ),
     onRunAdminFfmpeg: runAdminFfmpeg,
-    onAddVideosFromServer: addVideosFromServer,
-    onOpenAdmin: () => setAdminOpen(true),
-    onOpenImportPicker: () => {
+    onOpenAdmin: () => {
+      setAdminRequestedTab('files');
       setAdminOpen(true);
-      setImportPickerRequest(prev => prev + 1);
     },
     onOpenAdminAi: () => {
+      setAdminRequestedTab('ai');
       setAdminOpen(true);
       setAdminHistoryOpen(false);
     },
+    onRunClipchampExport: runAdminClipchampExport,
     onOpenFocusMenu: () => setFocusSideOpen(true),
     onToggleFocusMode: () => setIsFocusMode(prev => !prev),
     onToggleTheme: () => setIsDark(!isDark)
@@ -2575,6 +2596,7 @@ export default function App() {
     setActiveSegmentId,
     onCycleSegmentChannel: cycleSegmentChannelForId,
     selectedElement,
+    onSaveTrainingExample: saveCoverTrainingExample,
     duplicateElement,
 	    copyAttributes,
 	    pasteAttributes,
@@ -2614,6 +2636,7 @@ export default function App() {
         onCopyFfmpegBatchScript={copyFfmpegBatchScript}
         onCloseFfmpegBatchModal={() => setFfmpegBatchModalOpen(false)}
         adminOpen={adminOpen}
+        adminInitialTab={adminRequestedTab}
         adminHistoryOpen={adminHistoryOpen}
         adminError={adminError}
         adminHealth={adminHealth}
@@ -2625,8 +2648,11 @@ export default function App() {
         adminAiLoading={adminAiLoading}
         adminAiStats={adminAiStats}
         adminAiQueue={adminAiQueue}
+        adminAiSheetSuggestions={adminAiSheetSuggestions}
         adminAiLastRequestAt={adminAiLastRequestAt}
         adminAiLastError={adminAiLastError}
+        adminAiDriveCheck={adminAiDriveCheck}
+        adminAiColabMode={adminAiColabMode}
         adminAiRemoteState={adminAiRemoteState}
         adminJobProgress={adminJobProgress}
         adminJob={adminJob}
@@ -2638,9 +2664,6 @@ export default function App() {
     adminLogoLoading={adminLogoLoading}
     adminLogoStats={adminLogoStats}
         adminSyncState={adminSyncState}
-        importPickerRequest={importPickerRequest}
-        importPickerHandled={importPickerHandled}
-        onImportPickerHandled={setImportPickerHandled}
         autoSyncAllowed={autoSyncAllowed}
     selectedCount={selectedCount}
         activeVideo={activeVideo}
@@ -2659,11 +2682,17 @@ export default function App() {
         onSaveGoogleCredentials={saveGoogleCredentials}
         onAddVideos={addVideosFromServer}
         onRunAiSegments={runAdminAiSegments}
+        onRunAiSegmentsNgrok={runAdminAiSegmentsNgrok}
         onRunClipchampExport={runAdminClipchampExport}
         onRunAiSegmentsRemote={runAdminAiSegmentsRemote}
+        onColabModeChange={setAdminAiColabMode}
         onPingAiRemote={pingAdminAiRemote}
+        onCheckAiDrive={checkAdminAiDrive}
         onStopAi={stopAdminAi}
         onRetryAiFailed={retryAdminAiFailed}
+        onRefreshAiBatch={refreshAdminAiBatch}
+        onConfirmAiSheetSuggestion={confirmAiSheetSuggestion}
+        onDismissAiSheetSuggestion={dismissAiSheetSuggestion}
         onOpenHistory={() => {
           setAdminOpen(true);
           setAdminHistoryOpen(true);
@@ -2680,6 +2709,7 @@ export default function App() {
         onCloseHistory={() => setAdminHistoryOpen(false)}
         getJobProgress={getJobProgress}
         onStopJob={stopAdminJob}
+        onRetryIncompleteJob={retryIncompleteAdminJob}
       />
 
       <EditorLayout

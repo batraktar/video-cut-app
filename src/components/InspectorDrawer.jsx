@@ -100,7 +100,7 @@ export default function InspectorDrawer({ isDark, children }) {
         } ${open ? 'translate-x-0 opacity-100' : 'translate-x-2 pointer-events-none opacity-0'}`}
         style={{ right: 12, width }}
         aria-hidden={!open}
-        inert={!open}
+        inert={!open ? '' : undefined}
         onMouseEnter={cancelClose}
         onMouseLeave={scheduleClose}
       >

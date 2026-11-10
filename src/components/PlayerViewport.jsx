@@ -1,4 +1,5 @@
 import React, { memo, useEffect, useState } from 'react';
+import { RotateCw } from 'lucide-react';
 import { formatHotkeyList } from '../features/editor/hotkeys';
 
 function PlayerViewport({
@@ -30,6 +31,7 @@ function PlayerViewport({
   pasteAttributes,
   deleteElement,
   updateElement,
+  onSaveTrainingExample,
   onFocusResizeStart,
   visibleElements,
   canvasTool
@@ -177,7 +179,9 @@ function PlayerViewport({
                     width: `${el.w}%`,
                     height: `${el.h}%`,
                     zIndex: 40,
-                    opacity: isVisible ? 1 : 0.4
+                    opacity: isVisible ? 1 : 0.4,
+                    transform: `rotate(${Number(el.rotation) || 0}deg)`,
+                    transformOrigin: 'center'
                   }}
                 >
                   <div
@@ -191,6 +195,20 @@ function PlayerViewport({
                   />
                   {currentEdit.selectedId === el.id && currentEdit.viewMode === 'editor' && (
                     <>
+                      <div className="absolute -top-11 left-1/2 -translate-x-1/2 flex flex-col items-center z-50">
+                        <div className="h-3 border-l border-blue-500" />
+                        <button
+                          type="button"
+                          onMouseDown={e =>
+                            onDragStart(e, { type: 'element', id: el.id, action: 'rotate' })
+                          }
+                          className="flex h-6 w-6 items-center justify-center rounded-full border border-blue-500 bg-white text-blue-600 shadow cursor-grab active:cursor-grabbing"
+                          title={`Повернути фігуру (${Math.round(Number(el.rotation) || 0)}°)`}
+                          aria-label={`Повернути фігуру, зараз ${Math.round(Number(el.rotation) || 0)} градусів`}
+                        >
+                          <RotateCw className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                       <div
                         className="absolute -bottom-2 -right-2 w-4 h-4 bg-blue-500 border border-white rounded-full cursor-se-resize z-50 shadow"
                         onMouseDown={e =>
@@ -213,6 +231,30 @@ function PlayerViewport({
                         className="absolute -top-2 -right-2 w-4 h-4 bg-blue-500 border border-white rounded-full cursor-ne-resize z-50 shadow"
                         onMouseDown={e =>
                           onDragStart(e, { type: 'element', id: el.id, action: 'resize', corner: 'tr' })
+                        }
+                      />
+                      <div
+                        className="absolute top-1/2 -left-2 w-4 h-4 -translate-y-1/2 bg-blue-500 border border-white rounded-full cursor-ew-resize z-50 shadow"
+                        onMouseDown={e =>
+                          onDragStart(e, { type: 'element', id: el.id, action: 'resize', corner: 'l' })
+                        }
+                      />
+                      <div
+                        className="absolute top-1/2 -right-2 w-4 h-4 -translate-y-1/2 bg-blue-500 border border-white rounded-full cursor-ew-resize z-50 shadow"
+                        onMouseDown={e =>
+                          onDragStart(e, { type: 'element', id: el.id, action: 'resize', corner: 'r' })
+                        }
+                      />
+                      <div
+                        className="absolute -top-2 left-1/2 w-4 h-4 -translate-x-1/2 bg-blue-500 border border-white rounded-full cursor-ns-resize z-50 shadow"
+                        onMouseDown={e =>
+                          onDragStart(e, { type: 'element', id: el.id, action: 'resize', corner: 't' })
+                        }
+                      />
+                      <div
+                        className="absolute -bottom-2 left-1/2 w-4 h-4 -translate-x-1/2 bg-blue-500 border border-white rounded-full cursor-ns-resize z-50 shadow"
+                        onMouseDown={e =>
+                          onDragStart(e, { type: 'element', id: el.id, action: 'resize', corner: 'b' })
                         }
                       />
                     </>
@@ -266,6 +308,13 @@ function PlayerViewport({
               hotkey: 'fill',
               run: () => updateElement(contextMenu.id, { isOutline: false })
             },
+            ...(onSaveTrainingExample && ['rect', 'circle'].includes(contextMenu.element.type)
+              ? [{
+                  label: 'Зберегти кадр у датасет',
+                  hotkey: 'saveCoverTrainingExample',
+                  run: () => onSaveTrainingExample(contextMenu.id)
+                }]
+              : []),
             {
               label: 'Видалити',
               hotkey: 'deleteElement',

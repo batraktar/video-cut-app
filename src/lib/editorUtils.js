@@ -30,10 +30,19 @@ export const normalizeCropPx = (crop, meta) => {
   };
 };
 
+// Серверна версія (не localhost) живе в ОКРЕМОМУ просторі ключів сховища:
+// стан локальної апки (Mac-шляхи, локальні плейлисти) не повинен просочуватись
+// у серверний редактор через спільний localStorage браузера.
+const storageKey = key =>
+  typeof window !== 'undefined' &&
+  !/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname)
+    ? `${key}__srv`
+    : key;
+
 export const loadFromStorage = (key, fallback) => {
   if (typeof window === 'undefined') return fallback;
   try {
-    const raw = localStorage.getItem(key);
+    const raw = localStorage.getItem(storageKey(key));
     return raw ? JSON.parse(raw) : fallback;
   } catch {
     return fallback;
@@ -43,7 +52,7 @@ export const loadFromStorage = (key, fallback) => {
 export const saveToStorage = (key, value) => {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    localStorage.setItem(storageKey(key), JSON.stringify(value));
   } catch {
     return;
   }

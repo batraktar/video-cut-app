@@ -77,6 +77,7 @@ export default function WorkspaceArea({
   setActiveSegmentId,
   onCycleSegmentChannel,
   selectedElement,
+  onSaveTrainingExample,
   duplicateElement,
   copyAttributes,
   pasteAttributes,
@@ -146,6 +147,7 @@ export default function WorkspaceArea({
           pasteAttributes={pasteAttributes}
           deleteElement={deleteElement}
           updateElement={updateElement}
+          onSaveTrainingExample={onSaveTrainingExample}
           onFocusResizeStart={onFocusResizeStart}
           visibleElements={visibleElements}
           canvasTool={canvasTool}

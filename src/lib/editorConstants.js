@@ -16,8 +16,9 @@ export const DEFAULT_ADMIN_CONFIG = {
   logoMaxMatches: 5,
   logoMaxGap: 0.5,
   logoScales: '0.9,1.0,1.1',
+  aiDriveRemote: '',
   clipchampDriveRemote: 'lqd-kotyk-helper',
-  clipchampDriveFolderId: '1_bNIOZBZfbHQU9oEC2e_5Xqu5lSC4D2H',
+  clipchampDriveFolderId: '1p7uEPZ8WIWWvzbAmy9sV3-L4hWLj-ieb',
   clipchampFolderPrefix: 'Clipchamp',
   sheetId: DEFAULT_SHEET_ID,
   sheetGid: DEFAULT_SHEET_GID

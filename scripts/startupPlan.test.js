@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { getNpmInvocation, getStartupPlan } from './startupPlan.js';
+import { getNpmInvocation, getStartupPlan, isExpectedServiceResponse } from './startupPlan.js';
 
 describe('local startup plan', () => {
+  it('does not reuse another app on the same port', () => {
+    expect(isExpectedServiceResponse(200, '<title>video-cut-app</title>', '<title>video-cut-app</title>')).toBe(true);
+    expect(isExpectedServiceResponse(200, '<title>other-app</title>', '<title>video-cut-app</title>')).toBe(false);
+    expect(isExpectedServiceResponse(200, '{"ok":true}', '"app":"video-cut-app"')).toBe(false);
+  });
   it('starts only the API when the editor is already running', () => {
     expect(getStartupPlan({ appAlreadyRunning: true, apiAlreadyRunning: false })).toEqual({
       missingServices: ['api'],

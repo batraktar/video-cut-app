@@ -42,8 +42,7 @@ export default function TopBar({
   onRedo,
   onToggleViewMode,
   onRunAdminFfmpeg,
-  onAddVideosFromServer,
-  onOpenImportPicker,
+  onRunClipchampExport,
   onOpenAdmin,
   onOpenAdminAi,
   onOpenFocusMenu,
@@ -252,13 +251,14 @@ export default function TopBar({
             <Play className="w-4 h-4" />
           </button>
           <button
-            onClick={onOpenImportPicker || onAddVideosFromServer}
+            onClick={onRunClipchampExport}
             disabled={adminLoading}
             className={`p-2 rounded-lg border transition disabled:opacity-40 disabled:cursor-not-allowed ${isDark
               ? 'border-slate-700 text-slate-300 hover:bg-slate-800'
               : 'border-slate-200 text-slate-600 hover:bg-slate-100'
               }`}
-            title="Підтягнути з теки (сервер)"
+            title="Експортувати вибрані відео в налаштовану теку Google Drive"
+            aria-label="Експортувати вибрані відео в налаштовану теку Google Drive"
           >
             <Upload className="w-4 h-4" />
           </button>

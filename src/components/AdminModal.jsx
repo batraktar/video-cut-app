@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { CloudUpload, Layers, RefreshCw, Save } from 'lucide-react';
 import { SEGMENT_MODES } from '../lib/editorConstants';
+import {
+  formatExportBytes,
+  getClipchampJobStatus,
+  getExportFileStatusLabel,
+  getJobStatusLabel
+} from '../features/export/clipchampJobStatus';
 
 const ADMIN_TABS = [
   { id: 'files', label: 'Файли' },
@@ -9,9 +15,18 @@ const ADMIN_TABS = [
   { id: 'jobs', label: 'Завдання' },
   { id: 'data', label: 'Дані' }
 ];
+const AI_SHEET_ADDITIONS_ENABLED = false;
+
+const formatTransferSize = bytes => {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return '';
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(0)} КБ`;
+  return `${(value / 1024 ** 2).toFixed(1)} МБ`;
+};
 
 export default function AdminModal({
   open,
+  initialTab = 'files',
   isDark,
   adminError,
   adminHealth,
@@ -23,8 +38,11 @@ export default function AdminModal({
   adminAiLoading,
   adminAiStats,
   adminAiQueue,
+  adminAiSheetSuggestions = [],
   adminAiLastRequestAt,
   adminAiLastError,
+  adminAiDriveCheck,
+  adminAiColabMode,
   adminAiRemoteState,
   adminJobProgress,
   adminJob,
@@ -36,9 +54,6 @@ export default function AdminModal({
   adminLogoLoading,
   adminLogoStats,
   adminSyncState,
-  importPickerRequest,
-  importPickerHandled,
-  onImportPickerHandled,
   autoSyncAllowed,
   selectedCount,
   activeVideo,
@@ -54,11 +69,18 @@ export default function AdminModal({
   onSaveGoogleCredentials,
   onAddVideos,
   onRunAiSegments,
+  onRunAiSegmentsNgrok,
   onRunClipchampExport,
+  onRetryIncompleteJob,
   onRunAiSegmentsRemote,
+  onColabModeChange,
   onPingAiRemote,
+  onCheckAiDrive,
   onStopAi,
   onRetryAiFailed,
+  onRefreshAiBatch,
+  onConfirmAiSheetSuggestion,
+  onDismissAiSheetSuggestion,
   onOpenHistory,
   onSelectJob,
   onLoadSheet,
@@ -76,9 +98,40 @@ export default function AdminModal({
   const [snowFilter, setSnowFilter] = useState('any');
   const [onlySheet, setOnlySheet] = useState(false);
   const [pickerError, setPickerError] = useState('');
-  const [activeTab, setActiveTab] = useState('files');
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [googleServiceAccountJson, setGoogleServiceAccountJson] = useState('');
   const [googleCredentialsError, setGoogleCredentialsError] = useState('');
+  const [technicalLogCopied, setTechnicalLogCopied] = useState(false);
+  const [copiedAiRowId, setCopiedAiRowId] = useState('');
+
+  const copyAiSheetSuggestionRow = async suggestion => {
+    const row = suggestion?.row || {};
+    const values = [
+      row.link,
+      row.double,
+      row.status,
+      row.cameraType,
+      row.labels,
+      row.analogDigital,
+      row.cuttedLink,
+      '',
+      row.fileName
+    ].map(value => String(value || '').replace(/[\t\r\n]+/g, ' '));
+    try {
+      await navigator.clipboard.writeText(values.join('\t'));
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = values.join('\t');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+    setCopiedAiRowId(suggestion.id);
+    window.setTimeout(() => setCopiedAiRowId(''), 1400);
+  };
 
   const saveGoogleCredentials = async () => {
     setGoogleCredentialsError('');
@@ -108,18 +161,17 @@ export default function AdminModal({
     return () => window.removeEventListener('keydown', handleKey);
   }, [open, onClose]);
 
-  useEffect(() => {
-    if (!open) return;
-    if (!importPickerRequest) return;
-    if (importPickerRequest <= importPickerHandled) return;
-    const timer = window.setTimeout(() => {
-      onLoadSheet?.();
-      setOnlySheet(false);
-      setPickerOpen(true);
-      onImportPickerHandled?.(importPickerRequest);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [open, importPickerRequest, importPickerHandled, onLoadSheet, onImportPickerHandled]);
+  const clipchampStatus = getClipchampJobStatus(adminJob);
+  const copyTechnicalLog = async () => {
+    if (!adminJob?.log || !navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(adminJob.log);
+      setTechnicalLogCopied(true);
+      window.setTimeout(() => setTechnicalLogCopied(false), 1800);
+    } catch {
+      setTechnicalLogCopied(false);
+    }
+  };
 
   if (!open) return null;
 
@@ -175,6 +227,9 @@ export default function AdminModal({
         ? 'text-red-400'
         : 'text-slate-400';
   const aiTargetLabel = selectedCount > 0 ? `(${selectedCount})` : '';
+  const isRemoteHost =
+    typeof window !== 'undefined' &&
+    !/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
   const aiLocalLabel = adminAiLoading ? 'AI працює...' : `AI локально ${aiTargetLabel}`.trim();
   const aiRemoteLabel = adminAiLoading ? 'AI працює...' : `AI Colab ${aiTargetLabel}`.trim();
   const hasAiTarget = selectedCount > 0 || !!activeVideo;
@@ -183,10 +238,10 @@ export default function AdminModal({
   const aiQueueDone = aiQueue.filter(item => item.status === 'done').length;
   const aiQueueFailed = aiQueue.filter(item => item.status === 'error').length;
   const aiQueuePending = aiQueue.filter(item => item.status === 'pending').length;
+  const aiQueueUploading = aiQueue.filter(item => item.status === 'uploading').length;
+  const aiQueueAccepted = aiQueue.filter(item => item.status === 'accepted').length;
+  const aiQueueProcessing = aiQueue.filter(item => item.status === 'processing').length;
   const aiQueueRunning = aiQueue.filter(item => item.status === 'running').length;
-  const aiQueueProgress = aiQueueTotal
-    ? Math.round(((aiQueueDone + aiQueueFailed) / aiQueueTotal) * 100)
-    : 0;
   const aiLastRequestLabel = adminAiLastRequestAt
     ? new Date(adminAiLastRequestAt).toLocaleTimeString('uk-UA', {
         hour: '2-digit',
@@ -194,24 +249,7 @@ export default function AdminModal({
         second: '2-digit'
       })
     : '—';
-  const remoteStatus = adminAiRemoteState?.status || 'idle';
-  const remoteDotClass =
-    remoteStatus === 'ok'
-      ? 'bg-emerald-500'
-      : remoteStatus === 'error'
-        ? 'bg-rose-500'
-        : remoteStatus === 'checking'
-          ? 'bg-amber-400'
-          : 'bg-slate-400';
-  const remoteLabel =
-    remoteStatus === 'ok'
-      ? 'Online'
-      : remoteStatus === 'error'
-        ? 'Offline'
-        : remoteStatus === 'checking'
-          ? 'Checking'
-          : '—';
-  const aiErrorMessage = adminAiLastError || adminAiRemoteState?.lastError || '';
+  const aiErrorMessage = adminAiLastError || '';
 
   return (
     <div
@@ -296,6 +334,7 @@ export default function AdminModal({
                 {adminHealth === null ? 'Перевірка…' : adminHealth.ok ? 'Online' : 'Offline'}
               </span>
             </div>
+            {!isRemoteHost && (
             <div className="mt-2 flex items-center gap-2">
               <input
                 type="text"
@@ -312,6 +351,7 @@ export default function AdminModal({
                 Ping
               </button>
             </div>
+            )}
             <div className="mt-2 text-[10px] text-slate-400">
               {adminLastRefreshAt
                 ? `Останнє оновлення: ${adminLastRefreshAt.toLocaleTimeString()}`
@@ -391,7 +431,7 @@ export default function AdminModal({
                 Clipchamp Drive export
               </div>
               <div className="mt-1 text-[10px] text-slate-400">
-                Рендерить відео з links_map.csv та логом у датовану теку на комп’ютері; за бажанням копіює її в Google Drive.
+                Рендерить вибрані відео в локальну датовану теку, а готові відеофайли завантажує безпосередньо у вказану теку Google Drive.
               </div>
             </div>
             <span className="shrink-0 text-[10px] text-slate-400">
@@ -411,7 +451,7 @@ export default function AdminModal({
               }
               className="h-4 w-4 accent-sky-600"
             />
-            Також завантажувати готову теку в Google Drive
+            Також завантажувати готові відео в Google Drive
           </label>
           {adminConfig.clipchampUploadToDrive === false && (
             <p className="mt-1 text-[10px] text-slate-400">
@@ -446,7 +486,7 @@ export default function AdminModal({
               />
             </label>
             <label className="flex flex-col gap-1 text-[10px] text-slate-400">
-              Префікс нової теки
+              Префікс локальної теки
               <input
                 type="text"
                 value={adminConfig.clipchampFolderPrefix || ''}
@@ -491,7 +531,7 @@ export default function AdminModal({
             </div>
           </details>
           <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-400">
-            <span>Тека: Clipchamp_YYYY-MM-DD_HH-mm-ss</span>
+            <span>Локально: Clipchamp_YYYY-MM-DD_HH-mm-ss · Drive: у вказану теку</span>
             <button
               onClick={onSaveConfig}
               disabled={adminLoading}
@@ -612,21 +652,21 @@ export default function AdminModal({
         <div className="grid gap-4 md:grid-cols-2">
           <div className={`rounded-lg border p-3 md:col-span-2 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
             <div className="text-xs font-bold mb-2">AI сегменти</div>
-            <div className="grid gap-2 md:grid-cols-2">
-              <input
-                type="text"
-                value={adminConfig.aiModelPath || ''}
-                onChange={e => onConfigChange(prev => ({ ...prev, aiModelPath: e.target.value }))}
-                className={`w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-white border-slate-200'}`}
-                placeholder="/Users/mac/Desktop/video_cut/ml/best.pt"
-              />
-              <input
-                type="text"
-                value={adminConfig.aiPythonPath || ''}
-                onChange={e => onConfigChange(prev => ({ ...prev, aiPythonPath: e.target.value }))}
-                className={`w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-white border-slate-200'}`}
-                placeholder="/Users/mac/Desktop/video_cut/.venv-ml/bin/python"
-              />
+            <div className={`mb-3 inline-flex rounded-lg border p-1 ${isDark ? 'border-slate-700 bg-slate-950' : 'border-slate-200 bg-white'}`} role="group" aria-label="Режим Colab">
+              {[
+                { id: 'ngrok', label: 'Colab · Cloudflare / ngrok' },
+                { id: 'drive', label: 'Новий Colab · Drive' }
+              ].map(option => (
+                <button
+                  key={option.id}
+                  type="button"
+                  aria-pressed={adminAiColabMode === option.id}
+                  onClick={() => onColabModeChange(option.id)}
+                  className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${adminAiColabMode === option.id ? 'bg-indigo-600 text-white' : isDark ? 'text-slate-300 hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'}`}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
             <div className="mt-2 grid gap-2 md:grid-cols-4">
               <label className="flex flex-col gap-1 text-[10px] text-slate-400">
@@ -660,52 +700,88 @@ export default function AdminModal({
               >
                 Зберегти AI
               </button>
-              <button
-                onClick={onRunAiSegments}
-                className="px-3 py-2 rounded text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white"
-                disabled={adminAiLoading || adminLoading || !hasAiTarget}
-              >
-                {aiLocalLabel}
-              </button>
             </div>
-            <div className="mt-2 grid gap-2 md:grid-cols-4">
-              <input
-                type="text"
-                value={adminConfig.aiRemoteUrl || ''}
-                onChange={e => onConfigChange(prev => ({ ...prev, aiRemoteUrl: e.target.value }))}
-                className={`md:col-span-3 w-full text-xs p-2 rounded border ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-white border-slate-200'}`}
-                placeholder="Colab URL (https://xxxx.ngrok-free.app)"
-              />
+            {adminAiColabMode === 'ngrok' ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <label className="flex min-w-[220px] flex-1 flex-col gap-1 text-[10px] text-slate-400">
+                  Colab tunnel URL (Cloudflare або ngrok)
+                  <input
+                    type="text"
+                    value={adminConfig.aiRemoteUrl || ''}
+                    onChange={e => onConfigChange(prev => ({ ...prev, aiRemoteUrl: e.target.value }))}
+                    className={`w-full rounded border p-2 text-xs ${isDark ? 'border-slate-700 bg-slate-800 text-slate-200' : 'border-slate-200 bg-white text-slate-800'}`}
+                    placeholder="https://xxxx.trycloudflare.com"
+                  />
+                </label>
+                <button
+                  onClick={onPingAiRemote}
+                  className="self-end rounded border border-slate-400/40 px-3 py-2 text-xs font-bold text-slate-500 hover:border-slate-300 hover:text-slate-700"
+                  disabled={adminLoading || adminAiLoading || !adminConfig.aiRemoteUrl}
+                >
+                  Ping Colab
+                </button>
+                <button
+                  onClick={onRunAiSegmentsNgrok}
+                  className="self-end rounded bg-sky-600 px-3 py-2 text-xs font-bold text-white hover:bg-sky-700"
+                  disabled={adminAiLoading || adminLoading || !hasAiTarget || !adminConfig.aiRemoteUrl}
+                >
+                  {adminAiLoading ? 'Colab працює…' : `Запустити старий Colab ${aiTargetLabel}`}
+                </button>
+                <div className="w-full text-[10px] text-slate-400">
+                  Режим надсилає відео до активного notebook через Cloudflare або ngrok. {adminAiRemoteState?.status === 'ok' ? 'Colab на зв’язку.' : adminAiRemoteState?.lastError ? `Зв’язок: ${adminAiRemoteState.lastError}` : 'Запусти notebook і встав його поточний tunnel URL.'}
+                </div>
+              </div>
+            ) : (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <label className="flex min-w-[220px] flex-1 flex-col gap-1 text-[10px] text-slate-400">
+                rclone remote для AI у My Drive
+                <input
+                  type="text"
+                  value={adminConfig.aiDriveRemote || ''}
+                  onChange={e => onConfigChange(prev => ({ ...prev, aiDriveRemote: e.target.value }))}
+                  className={`w-full rounded border p-2 text-xs ${isDark ? 'border-slate-700 bg-slate-800 text-slate-200' : 'border-slate-200 bg-white text-slate-800'}`}
+                  placeholder="best2-my-drive"
+                  aria-label="rclone remote для AI черги"
+                />
+              </label>
+              <button
+                onClick={onCheckAiDrive}
+                className="self-end rounded border border-slate-400/40 px-3 py-2 text-xs font-bold text-slate-500 hover:border-slate-300 hover:text-slate-700"
+                disabled={adminLoading || adminAiLoading}
+              >
+                Перевірити Drive
+              </button>
+              <div className="min-w-0 flex-1 text-[10px] text-slate-400">
+                Batch піде у <code>best2_training/colab_jobs</code> через <span className="font-semibold">{adminConfig.aiDriveRemote || 'вкажи My Drive remote'}</span>.
+                У корені цього remote має бути папка <code>best2_training</code>. Remote Clipchamp налаштовується окремо у вкладці Google Drive.
+              </div>
               <button
                 onClick={onRunAiSegmentsRemote}
                 className="px-3 py-2 rounded text-xs font-bold bg-sky-600 hover:bg-sky-700 text-white"
-                disabled={adminAiLoading || adminLoading || !hasAiTarget || !adminConfig.aiRemoteUrl}
-                title={!adminConfig.aiRemoteUrl ? 'Вкажіть Colab URL' : ''}
+                disabled={adminAiLoading || adminLoading || !hasAiTarget || !adminConfig.aiDriveRemote}
+                title={!adminConfig.aiDriveRemote ? 'Вкажи rclone remote, що веде до My Drive' : ''}
               >
-                {aiRemoteLabel}
+                {aiRemoteLabel} → Drive
               </button>
-            </div>
-            <div className="mt-1 text-[10px] text-slate-400">
-              1 FPS = аналіз одного кадру щосекунди. Результати надходять по одному відео:
-              готові сегменти одразу з’являються в редакторі, а черга працює далі у фоні.
-            </div>
+            </div>)}
+            {adminAiColabMode === 'drive' && <div className="mt-1 text-[10px] text-slate-400">
+              Натисни «Зберегти AI». Перевір у Terminal: <code>rclone lsd REMOTE:</code> має показати <code>best2_training</code>. Якщо ні — створи окремий rclone remote для особистого My Drive, не Shared Drive, і авторизуй тим самим Google-акаунтом.
+            </div>}
+            {adminAiColabMode === 'drive' && adminAiDriveCheck && (
+              <div className={`mt-1 break-words text-[10px] ${adminAiDriveCheck.startsWith('Drive підключений') ? 'text-emerald-600' : adminAiDriveCheck.startsWith('Перевіряю') ? 'text-amber-500' : 'text-rose-500'}`}>
+                {adminAiDriveCheck}
+              </div>
+            )}
+            {adminAiColabMode === 'drive' && <div className="mt-1 text-[10px] text-slate-400">
+              Після прийому всіх відео localhost можна вимкнути. Поки Colab обробляє чергу, не зупиняй notebook; результати залишаться в Drive й переживуть завершення runtime.
+            </div>}
             {adminAiStats && (
               <div className="mt-1 text-[10px] text-slate-400">
-                Оброблено відео: {adminAiStats.processed}
+                {adminAiColabMode === 'drive' ? `У Drive: ${adminAiStats.accepted ?? 0} • ` : ''}Оброблено: {adminAiStats.processed ?? 0} • помилки: {adminAiStats.failed ?? 0}
               </div>
             )}
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-slate-400">
-              <span className="inline-flex items-center gap-1">
-                <span className={`h-2 w-2 rounded-full ${remoteDotClass}`} />
-                Colab: {remoteLabel}
-              </span>
-              <button
-                onClick={onPingAiRemote}
-                className="px-2 py-1 rounded border text-[10px] font-bold border-slate-400/40 text-slate-400 hover:border-slate-300"
-                disabled={!adminConfig.aiRemoteUrl || adminAiLoading}
-              >
-                Ping
-              </button>
+              {adminAiColabMode === 'drive' && <span>Статуси зберігаються на Drive</span>}
               <span>Останній запит: {aiLastRequestLabel}</span>
             </div>
             {aiErrorMessage && (
@@ -717,13 +793,16 @@ export default function AdminModal({
               <div className="mt-2 rounded border border-slate-200/20 bg-slate-900/20 p-2">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
                   <span>
-                    Черга AI: {aiQueueDone}/{aiQueueTotal} • В роботі {aiQueueRunning} • Очікує {aiQueuePending} • Помилки {aiQueueFailed}
+                    {adminAiColabMode === 'drive'
+                      ? `Не передано: ${aiQueuePending} • Передається: ${aiQueueUploading} • У Drive, чекають Colab: ${aiQueueAccepted} • Colab обробляє: ${aiQueueProcessing} • Готово: ${aiQueueDone}/${aiQueueTotal} • Помилки: ${aiQueueFailed}`
+                      : `Очікує: ${aiQueuePending} • У роботі: ${aiQueueRunning} • Готово: ${aiQueueDone}/${aiQueueTotal} • Помилки: ${aiQueueFailed}`}
                   </span>
                   <div className="flex gap-2">
                     <button
                       onClick={onStopAi}
-                      className="px-2 py-1 rounded text-[10px] font-bold bg-rose-600/80 hover:bg-rose-600 text-white"
+                      className="px-2 py-1 rounded text-[10px] font-bold bg-rose-600/80 hover:bg-rose-600 text-white disabled:opacity-40 disabled:cursor-not-allowed"
                       disabled={!adminAiLoading}
+                      title={adminAiColabMode === 'drive' ? 'Зупиняє передавання та просить Drive-чергу скасувати задачі' : 'Зупиняє активний запит до старого Colab'}
                     >
                       Стоп
                     </button>
@@ -734,24 +813,30 @@ export default function AdminModal({
                     >
                       Повторити помилки
                     </button>
+                    {aiQueue.some(item => item.provider === 'colab' && item.batchId) && (
+                      <button
+                        onClick={onRefreshAiBatch}
+                        className="px-2 py-1 rounded text-[10px] font-bold bg-sky-600/80 hover:bg-sky-600 text-white"
+                        disabled={adminAiLoading}
+                      >
+                        Оновити з Drive
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="mt-2 h-1 w-full rounded-full bg-slate-700/50 overflow-hidden">
-                  <div
-                    className="h-full bg-emerald-500 transition-all duration-300"
-                    style={{ width: `${aiQueueProgress}%` }}
-                  />
-                </div>
-                <div className="mt-2 max-h-28 overflow-auto text-[10px] text-slate-400">
+                {adminAiColabMode === 'drive' && <div className="mt-1 text-[9px] leading-3 text-slate-500">
+                  «У Drive • очікує Colab» означає, що оригінал уже передано, але сегменти ще не створені.
+                </div>}
+                <div className="mt-2 max-h-64 overflow-auto text-[10px] text-slate-400">
                   {aiQueue.map(item => (
-                    <div key={item.id} className="border-b border-slate-500/10 py-1 last:border-0">
+                    <div key={item.id} className="border-b border-slate-500/10 py-2 last:border-0">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="truncate">{item.name}</span>
+                        <span className="min-w-0 truncate font-medium text-slate-200">{item.name}</span>
                         <span
                         className={`shrink-0 ${
                           item.status === 'done'
                             ? 'text-emerald-400'
-                            : item.status === 'running'
+                          : ['running', 'uploading', 'accepted', 'processing'].includes(item.status)
                               ? 'text-amber-400'
                               : item.status === 'error'
                                 ? 'text-rose-400'
@@ -760,17 +845,66 @@ export default function AdminModal({
                         >
                           {item.status === 'done'
                           ? `готово${Number.isFinite(item.segmentCount) ? ` • ${item.segmentCount} сегм.` : ''}`
-                          : item.status === 'running'
-                            ? 'в роботі'
-                            : item.status === 'error'
+                            : item.status === 'uploading'
+                              ? `передається в Drive${Number.isFinite(item.uploadProgress?.percent) ? ` • ${item.uploadProgress.percent}%` : ''}`
+                              : item.status === 'accepted'
+                                ? 'у Drive • очікує Colab'
+                                : item.status === 'processing'
+                                  ? 'обробляється'
+                                  : item.status === 'running'
+                                    ? 'в роботі'
+                                : item.status === 'error'
                               ? item.error === 'no_segments'
-                                ? item.provider === 'colab'
+                            ? ['colab', 'ngrok'].includes(item.provider)
                                   ? 'Colab: порожній result'
                                   : '0 сегментів'
                                 : 'помилка'
-                                : 'очікує'}
+                            : item.status === 'cancelled'
+                              ? 'зупинено'
+                              : 'очікує'}
                         </span>
                       </div>
+                      {item.logs?.length > 0 && (
+                        <div className="mt-0.5 break-words text-[9px] leading-3 text-slate-400">
+                          <time className="mr-1 font-mono text-slate-500">
+                            {new Date(item.logs.at(-1).at).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </time>
+                          {item.logs.at(-1).message}
+                        </div>
+                      )}
+                      {item.status === 'uploading' && (
+                        <div className="mt-1">
+                          <div
+                            className="h-1.5 overflow-hidden rounded-full bg-slate-700/70"
+                            role="progressbar"
+                            aria-label={`Передавання ${item.name} у Google Drive`}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuenow={item.uploadProgress?.percent ?? 0}
+                          >
+                            <div
+                              className="h-full rounded-full bg-sky-400 transition-[width] duration-300"
+                              style={{ width: `${item.uploadProgress?.percent ?? 0}%` }}
+                            />
+                          </div>
+                          <div className="mt-0.5 flex justify-between gap-2 text-[9px] text-slate-400">
+                            <span>
+                              {formatTransferSize(item.uploadProgress?.bytesTransferred)}
+                              {Number.isFinite(item.uploadProgress?.totalBytes) ? ` / ${formatTransferSize(item.uploadProgress.totalBytes)}` : ''}
+                              {item.uploadProgress?.speed ? ` • ${item.uploadProgress.speed}` : ''}
+                            </span>
+                            <span>{item.uploadProgress?.eta && item.uploadProgress.eta !== '-' ? `залишилось ${item.uploadProgress.eta}` : ''}</span>
+                          </div>
+                        </div>
+                      )}
+                      {item.status === 'processing' && item.processingProgress && (
+                        <div className="mt-1 text-[9px] text-slate-400">
+                          Colab: кадр {item.processingProgress.frames}/{item.processingProgress.totalFrames} ({item.processingProgress.percent}%)
+                          <div className="mt-1 h-1 overflow-hidden rounded-full bg-slate-700/70">
+                            <div className="h-full bg-amber-400 transition-[width] duration-300" style={{ width: `${item.processingProgress.percent}%` }} />
+                          </div>
+                        </div>
+                      )}
                       {item.taskId && (
                         <div className="truncate font-mono text-[9px] text-slate-500">
                           {item.taskId}
@@ -781,16 +915,107 @@ export default function AdminModal({
                           {item.errorDetail}
                         </div>
                       )}
+                      {Array.isArray(item.logs) && item.logs.length > 0 && (
+                        <details className="mt-1 text-[9px]">
+                          <summary className="cursor-pointer select-none text-slate-400 hover:text-slate-200">
+                            Повний журнал · {item.logs.length} подій
+                          </summary>
+                          <ol className="mt-1 space-y-0.5 border-l border-slate-500/30 pl-2">
+                            {item.logs.map((entry, index) => (
+                              <li key={`${entry.at}-${index}`} className="break-words leading-3 text-slate-400">
+                                <time className="mr-1 font-mono text-slate-500">
+                                  {new Date(entry.at).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                </time>
+                                {entry.message}
+                              </li>
+                            ))}
+                          </ol>
+                        </details>
+                      )}
                     </div>
                   ))}
                 </div>
               </div>
             )}
+            {AI_SHEET_ADDITIONS_ENABLED && adminAiSheetSuggestions.some(item => item.status !== 'dismissed') && (
+              <section className={`mt-3 rounded border p-3 ${isDark ? 'border-amber-500/30 bg-amber-950/20' : 'border-amber-300 bg-amber-50'}`}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-xs font-bold">Нові канали для таблиці</h3>
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      Сегменти збережені в редакторі. Тут лише канали, яких ще немає в рядках Google Sheets.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-amber-500/15 px-2 py-1 text-[10px] font-bold text-amber-600">
+                    {adminAiSheetSuggestions.filter(item => item.status === 'pending').length} нових
+                  </span>
+                </div>
+                <div className="mt-2 max-h-72 space-y-2 overflow-auto">
+                  {adminAiSheetSuggestions.filter(item => item.status !== 'dismissed').slice(0, 40).map(item => {
+                    const row = item.row || {};
+                    const statusLabel = item.status === 'added'
+                      ? `Додано в таблицю${item.rowIndex ? ` · рядок ${item.rowIndex}` : ''}`
+                      : item.status === 'already_exists'
+                        ? `Вже є в таблиці${item.rowIndex ? ` · рядок ${item.rowIndex}` : ''}`
+                        : item.status === 'saving' ? 'Записую…' : 'Потрібне підтвердження';
+                    const segmentSummary = (item.segments || []).map(segment =>
+                      `${Number(segment.start).toFixed(1)}–${Number(segment.end).toFixed(1)}с`
+                    ).join(', ');
+                    return (
+                      <div key={item.id} className={`rounded border p-2 ${isDark ? 'border-slate-700 bg-slate-900/60' : 'border-amber-200 bg-white'}`}>
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-semibold">
+                              <span className="truncate">{item.fileName}</span>
+                              <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-sky-600">новий канал: {item.modeLabel}</span>
+                              <span className={item.status === 'pending' ? 'text-amber-600' : item.status === 'added' || item.status === 'already_exists' ? 'text-emerald-600' : 'text-slate-500'}>{statusLabel}</span>
+                            </div>
+                            <p className="mt-1 text-[10px] text-slate-500">
+                              {item.segmentCount} сегм. · {segmentSummary || 'часові відрізки не задані'}
+                            </p>
+                            <div className="mt-1 overflow-x-auto rounded bg-slate-500/5 p-1.5 font-mono text-[9px] text-slate-500" title="Порядок колонок: link, double, status, camera_type, Labels, analog_digital, cutted_link, date_video, file_name">
+                              {[
+                                row.link || 'link —', row.double || 'double —', row.status || 'status —',
+                                row.cameraType || 'camera_type —', row.labels || 'Labels —',
+                                row.analogDigital || 'analog_digital —', row.cuttedLink || 'cutted_link —', 'date_video —',
+                                row.fileName || item.fileName
+                              ].join('  |  ')}
+                            </div>
+                            {item.error && <p className="mt-1 text-[10px] text-rose-500">Не записано: {item.error}</p>}
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => copyAiSheetSuggestionRow(item)}
+                              className="rounded border border-slate-400/40 px-2 py-1 text-[10px] font-semibold hover:border-slate-400"
+                            >{copiedAiRowId === item.id ? 'Скопійовано' : 'Копіювати рядок'}</button>
+                            {item.status === 'pending' && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => onConfirmAiSheetSuggestion?.(item.id)}
+                                  className="rounded bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700"
+                                >Підтвердити й додати</button>
+                                <button
+                                  type="button"
+                                  onClick={() => onDismissAiSheetSuggestion?.(item.id)}
+                                  className="rounded border border-slate-400/40 px-2 py-1 text-[10px] hover:border-slate-400"
+                                >Відкласти</button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
           </div>
         </div>
         )}
 
-        {activeTab === 'jobs' && adminJobProgress !== null && (
+        {activeTab === 'jobs' && !clipchampStatus && adminJobProgress !== null && (
           <div className="mt-4">
             <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
               <div className="flex items-center justify-between mb-2">
@@ -810,10 +1035,162 @@ export default function AdminModal({
         {activeTab === 'jobs' && (
         <div className="mt-4">
           <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-slate-50'}`}>
-            <div className="text-xs font-bold mb-2">Лог поточного job</div>
-            <pre className={`p-2 rounded border overflow-auto max-h-40 text-[10px] font-mono ${isDark ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}>
-              {adminJob?.log ? adminJob.log : 'Немає активного job'}
-            </pre>
+            {clipchampStatus ? (
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-bold">Експорт відео</div>
+                    <p role="status" aria-live="polite" aria-atomic="true" className="mt-1 text-xs text-slate-500">{clipchampStatus.stageText}</p>
+                    <p className="mt-1 text-[11px] text-slate-500">{clipchampStatus.workflowText}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                  {['error', 'cancelled'].includes(clipchampStatus.stage) && (
+                    <button type="button" onClick={() => onRetryIncompleteJob(adminJob?.id)} className="rounded border border-amber-500 px-2.5 py-1 text-xs font-semibold text-amber-600 hover:bg-amber-500/10">
+                      Повторити незавершені
+                    </button>
+                  )}
+                  <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                    clipchampStatus.stage === 'done'
+                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600'
+                      : clipchampStatus.stage === 'error'
+                        ? 'border-rose-500/40 bg-rose-500/10 text-rose-600'
+                        : 'border-indigo-500/40 bg-indigo-500/10 text-indigo-600'
+                  }`}>
+                    {getJobStatusLabel(adminJob?.status)}
+                  </span>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-4">
+                  <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white'}`}>
+                    <div className="text-[11px] text-slate-500">Файлів на виході</div>
+                    <div className="mt-1 text-sm font-semibold">{clipchampStatus.totalCount || '—'}</div>
+                  </div>
+                  <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white'}`}>
+                    <div className="text-[11px] text-slate-500">Відео оброблено</div>
+                    <div className="mt-1 text-sm font-semibold">
+                      {clipchampStatus.totalCount
+                        ? `${clipchampStatus.processedCount} з ${clipchampStatus.totalCount}`
+                        : 'Очікую дані'}
+                    </div>
+                  </div>
+                  {clipchampStatus.uploadsToDrive && (
+                    <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white'}`}>
+                      <div className="text-[11px] text-slate-500">Уже в Google Drive</div>
+                      <div className="mt-1 text-sm font-semibold">{clipchampStatus.uploadedCount} з {clipchampStatus.totalCount}</div>
+                    </div>
+                  )}
+                  <div className={`rounded-lg border p-3 ${isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white'}`}>
+                    <div className="text-[11px] text-slate-500">{clipchampStatus.hasPerFileEvents ? 'Поточний файл передано' : 'Передано за розміром'}</div>
+                    <div className="mt-1 text-sm font-semibold">
+                      {Number.isFinite(clipchampStatus.transferredBytes) && Number.isFinite(clipchampStatus.totalBytes)
+                        ? `${formatExportBytes(clipchampStatus.transferredBytes)} з ${formatExportBytes(clipchampStatus.totalBytes)}`
+                        : clipchampStatus.percent !== null ? `${clipchampStatus.percent}%` : 'Ще рахується'}
+                    </div>
+                  </div>
+                </div>
+
+                {clipchampStatus.percent !== null && (
+                  <div className="mt-3">
+                    <div className="mb-1 flex justify-between text-[11px] text-slate-500">
+                      <span>{clipchampStatus.stage === 'cancelled' ? 'Прогрес на момент зупинки' : clipchampStatus.uploadsToDrive ? 'Передавання в Drive' : 'Підготовка експорту'}</span>
+                      <span>{clipchampStatus.percent}%</span>
+                    </div>
+                    <div
+                      className="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"
+                      role="progressbar"
+                      aria-label="Прогрес експорту відео"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={clipchampStatus.percent}
+                    >
+                      <div
+                        className={`h-full rounded-full transition-[width] duration-300 ${clipchampStatus.stage === 'error' ? 'bg-rose-500' : clipchampStatus.stage === 'done' ? 'bg-emerald-500' : 'bg-indigo-500'}`}
+                        style={{ width: `${clipchampStatus.percent}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {clipchampStatus.currentFile && !['done', 'cancelled'].includes(clipchampStatus.stage) && (
+                  <div className={`mt-3 rounded-lg border p-3 text-xs ${isDark ? 'border-slate-700 bg-slate-800/70' : 'border-slate-200 bg-white'}`}>
+                    <div className="font-semibold">{clipchampStatus.stage === 'uploading' ? 'Зараз завантажується' : clipchampStatus.stage === 'error' ? 'Останній файл перед помилкою' : 'Зараз обробляється'}</div>
+                    <div className="mt-1 break-all text-slate-600 dark:text-slate-300">{clipchampStatus.currentFile}</div>
+                    {clipchampStatus.currentFilePercent !== null && (
+                      <div className="mt-1 text-slate-500">
+                        {clipchampStatus.currentFilePercent}% цього файла
+                        {clipchampStatus.hasPerFileEvents && Number.isFinite(clipchampStatus.transferredBytes) && Number.isFinite(clipchampStatus.totalBytes)
+                          ? ` · ${formatExportBytes(clipchampStatus.transferredBytes)} з ${formatExportBytes(clipchampStatus.totalBytes)}`
+                          : ''}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {clipchampStatus.transferNote && (
+                  <div className={`mt-3 rounded-lg border p-3 text-xs ${isDark ? 'border-amber-700/60 bg-amber-950/30 text-amber-200' : 'border-amber-300 bg-amber-50 text-amber-900'}`}>
+                    {clipchampStatus.transferNote}
+                  </div>
+                )}
+
+                {clipchampStatus.driveUrl && (
+                  <a
+                    href={clipchampStatus.driveUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 inline-flex min-h-9 items-center rounded border border-indigo-500/30 px-3 text-xs font-semibold text-indigo-600 hover:bg-indigo-500/10 dark:text-indigo-300"
+                  >
+                    Відкрити теку призначення в Google Drive
+                  </a>
+                )}
+
+                {clipchampStatus.canShowFileList && clipchampStatus.files.length > 0 && (
+                  <div className="mt-4">
+                    <div className="mb-2 text-xs font-semibold">Стан кожного відео</div>
+                    <div className={`max-h-56 overflow-auto rounded-lg border ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
+                      {clipchampStatus.files.map(file => (
+                        <div key={file.name} className={`flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2 last:border-0 ${isDark ? 'border-slate-700' : 'border-slate-100'}`}>
+                          <span className="min-w-0 break-all text-xs">{file.name}</span>
+                          <span className={`shrink-0 text-[11px] font-medium ${file.status === 'error' ? 'text-rose-500' : file.status === 'uploaded' ? 'text-emerald-600' : file.status === 'uploading' || file.status === 'rendering' ? 'text-indigo-500' : 'text-slate-500'}`}>
+                            {getExportFileStatusLabel(file.status)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {!clipchampStatus.hasPerFileEvents && clipchampStatus.isUpload && clipchampStatus.totalCount > 0 && clipchampStatus.stage !== 'done' && (
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    Це завдання запущене старою версією: вона не записувала окремий статус для кожного файла. Тут показані загальна кількість і поточний файл.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="mb-3 text-xs">
+                <div className="font-semibold">{adminJob ? `Завдання: ${getJobStatusLabel(adminJob.status)}` : 'Немає вибраного завдання'}</div>
+                {adminJob?.status === 'running' && <p className="mt-1 text-slate-500">Локальний сервер зараз виконує команду. Якщо прогресу немає, відкрий журнал нижче.</p>}
+              </div>
+            )}
+
+            <details className="mt-4">
+              <summary className="cursor-pointer select-none text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200">
+                Технічний журнал {adminJob?.log ? `· ${adminJob.log.length.toLocaleString('uk-UA')} символів` : ''}
+              </summary>
+              <div className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={copyTechnicalLog}
+                  disabled={!adminJob?.log}
+                  className={`rounded border px-2.5 py-1.5 text-[11px] disabled:cursor-not-allowed disabled:opacity-40 ${isDark ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-slate-300 text-slate-600 hover:bg-slate-100'}`}
+                >
+                  {technicalLogCopied ? 'Журнал скопійовано' : 'Скопіювати журнал'}
+                </button>
+              </div>
+              <pre className={`mt-2 whitespace-pre-wrap break-words rounded border p-3 max-h-72 overflow-auto text-[11px] font-mono ${isDark ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-white border-slate-200 text-slate-700'}`}>
+                {adminJob?.log ? adminJob.log : 'Журнал поки порожній.'}
+              </pre>
+            </details>
           </div>
         </div>
         )}
@@ -843,7 +1220,7 @@ export default function AdminModal({
                         }`}
                       title={jobMeta.tooltip || undefined}
                     >
-                      {jobMeta.label} {job.status}
+                      {jobMeta.label} {getJobStatusLabel(job.status)}
                     </button>
                   );
                 })}

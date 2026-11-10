@@ -14,8 +14,10 @@ import {
 import {
   buildClipchampExportCommand,
   extractDriveFolderId,
-  formatClipchampFolderName
+  formatClipchampFolderName,
+  shellQuote
 } from '../features/export/clipchampExport';
+import { getClipchampJobStatus } from '../features/export/clipchampJobStatus';
 import {
   buildChannelsFromEntries,
   clamp,
@@ -27,7 +29,7 @@ import {
   getServerFileKey,
   getSuffixForSegmentMode,
   mergeLabelTokens,
-  mergeChannelLists,
+  loadFromStorage,
   normalizeName,
   normalizeSegmentSets,
   parseLabelTokens,
@@ -37,6 +39,17 @@ import {
   resolveSuffixFromMode,
   saveToStorage
 } from '../lib/editorUtils';
+import { getPlaylistItemChecked, getPlaylistSelection } from '../features/editor/playlistSelection';
+
+const ADMIN_AI_QUEUE_STORAGE_KEY = 'videoCut.adminAiQueue.v2';
+const AI_SHEET_SUGGESTIONS_STORAGE_KEY = 'videoCut.aiSheetSuggestions.v1';
+const createId = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+// Серверна версія редактора (не localhost): API — той самий origin
+// (nginx проксює на Express), адреса AI — стабільний /infer цього ж хоста.
+const IS_REMOTE_HOST =
+  typeof window !== 'undefined' &&
+  !/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
 
 export default function useAdmin({
   playlist,
@@ -47,6 +60,8 @@ export default function useAdmin({
   currentId,
   setCurrentId,
   activeVideo,
+  videoRef,
+  currentTime,
   savedEditsRef,
   showHud,
   prefs,
@@ -88,7 +103,9 @@ export default function useAdmin({
   } = helpers;
 
   const [adminOpen, setAdminOpen] = useState(false);
-  const [adminBaseUrl, setAdminBaseUrl] = useState('http://localhost:7071');
+  const [adminBaseUrl, setAdminBaseUrl] = useState(
+    IS_REMOTE_HOST ? '' : 'http://localhost:7071'
+  );
   const [adminHealth, setAdminHealth] = useState(null);
   const [adminSheet, setAdminSheet] = useState(null);
   const [adminSnapshot, setAdminSnapshot] = useState(null);
@@ -107,10 +124,33 @@ export default function useAdmin({
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminAiLoading, setAdminAiLoading] = useState(false);
   const [adminAiStats, setAdminAiStats] = useState(null);
-  const [adminAiQueue, setAdminAiQueue] = useState([]);
+  const [adminAiQueue, setAdminAiQueue] = useState(() => {
+    try {
+      const value = JSON.parse(window.localStorage.getItem(ADMIN_AI_QUEUE_STORAGE_KEY) || '[]');
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  });
+  const [adminAiSheetSuggestions, setAdminAiSheetSuggestions] = useState(() => {
+    try {
+      const value = JSON.parse(window.localStorage.getItem(AI_SHEET_SUGGESTIONS_STORAGE_KEY) || '[]');
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  });
   const [adminAiLastRequestAt, setAdminAiLastRequestAt] = useState(null);
   const [adminAiLastError, setAdminAiLastError] = useState(null);
   const [adminAiLastProvider, setAdminAiLastProvider] = useState('');
+  const [adminAiColabMode, setAdminAiColabMode] = useState(() => {
+    try {
+      return window.localStorage.getItem('videoCut.adminAiColabMode.v1') === 'drive' ? 'drive' : 'ngrok';
+    } catch {
+      return 'ngrok';
+    }
+  });
+  const [adminAiDriveCheck, setAdminAiDriveCheck] = useState('');
   const [adminAiRemoteState, setAdminAiRemoteState] = useState({
     status: 'idle',
     lastCheckedAt: null,
@@ -131,7 +171,35 @@ export default function useAdmin({
   const adminJobStatusRef = useRef(new Map());
   const autoSaveTimerRef = useRef(null);
   const lastSnapshotRef = useRef('');
-  const adminAiAbortRef = useRef({ aborted: false, controller: null });
+  const adminAiAbortRef = useRef({ aborted: false, controller: null, controllers: [] });
+  const aiSheetAppendInFlightRef = useRef(new Set());
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ADMIN_AI_QUEUE_STORAGE_KEY, JSON.stringify(adminAiQueue));
+    } catch {
+      // Queue recovery is best effort; the authoritative job state is stored by Colab in Drive.
+    }
+  }, [adminAiQueue]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        AI_SHEET_SUGGESTIONS_STORAGE_KEY,
+        JSON.stringify(adminAiSheetSuggestions)
+      );
+    } catch {
+      // Keep the current session usable if browser storage is full or unavailable.
+    }
+  }, [adminAiSheetSuggestions]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('videoCut.adminAiColabMode.v1', adminAiColabMode);
+    } catch {
+      // The selected Colab route is a convenience preference only.
+    }
+  }, [adminAiColabMode]);
 
   const setAiQueueStatus = useCallback((id, patch) => {
     setAdminAiQueue(prev =>
@@ -157,16 +225,15 @@ export default function useAdmin({
       lastError: null
     }));
     try {
-      const headers = base.includes('.ngrok-free.app')
-        ? { 'ngrok-skip-browser-warning': 'true' }
-        : undefined;
-      const res = await fetch(`${base}/health`, { method: 'GET', headers });
-      if (!res.ok) {
+      const proxyBase = `${adminBaseUrl.replace(/\/+$/, '')}/ai/remote-proxy/${encodeURIComponent(base)}`;
+      const res = await fetch(`${proxyBase}/health`);
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || payload?.ok !== true) {
         setAdminAiRemoteState({
           status: 'error',
           lastCheckedAt: Date.now(),
           lastHttp: res.status,
-          lastError: `HTTP ${res.status}`
+          lastError: payload?.detail || payload?.error || (res.ok ? 'Тунель не повернув health Colab' : `HTTP ${res.status}`)
         });
         return;
       }
@@ -184,7 +251,7 @@ export default function useAdmin({
         lastError: 'Connection failed'
       });
     }
-  }, [adminConfig.aiRemoteUrl]);
+  }, [adminBaseUrl, adminConfig.aiRemoteUrl]);
 
   const fetchAdminJson = useCallback(
     async (path, options = {}) => {
@@ -209,6 +276,15 @@ export default function useAdmin({
         return payload;
       } catch (e) {
         if (options.returnErrorPayload && e?.payload) return e.payload;
+        if (options.returnErrorPayload) {
+          return {
+            ok: false,
+            error: e?.name === 'AbortError' ? 'request_aborted' : 'local_api_unreachable',
+            detail: e?.name === 'AbortError'
+              ? 'Запит скасовано.'
+              : `Локальний API не відповів: ${String(e?.message || e)}`
+          };
+        }
         if (!options.silent) {
           const serverError = e?.payload?.error;
           if (e?.status === 404) {
@@ -292,6 +368,10 @@ export default function useAdmin({
   const getJobProgress = useCallback(
     job => {
       if (!job) return null;
+      const exportStatus = getClipchampJobStatus(job);
+      if (exportStatus?.percent !== null && exportStatus?.percent !== undefined) {
+        return exportStatus.percent;
+      }
       const expected =
         adminJobExpectedMapRef.current.get(job.id) ??
         (job.id === adminJob?.id ? adminJobExpectedDuration : null);
@@ -360,7 +440,12 @@ export default function useAdmin({
           typeof data.config.logoScales === 'string'
             ? data.config.logoScales
             : DEFAULT_ADMIN_CONFIG.logoScales,
-        aiRemoteUrl: data.config.aiRemoteUrl || DEFAULT_ADMIN_CONFIG.aiRemoteUrl,
+        aiRemoteUrl:
+          IS_REMOTE_HOST &&
+          (!data.config.aiRemoteUrl ||
+            /ngrok|localhost|127\.0\.0\.1/.test(data.config.aiRemoteUrl))
+            ? `${window.location.origin}/infer`
+            : data.config.aiRemoteUrl || DEFAULT_ADMIN_CONFIG.aiRemoteUrl,
         sheetId: data.config.sheetId || DEFAULT_ADMIN_CONFIG.sheetId,
         sheetGid: data.config.sheetGid || DEFAULT_ADMIN_CONFIG.sheetGid,
         googleCredentialsConfigured: Boolean(data.config.googleCredentialsConfigured)
@@ -468,6 +553,122 @@ export default function useAdmin({
     return sheetMapPromiseRef.current;
   }, [fetchAdminJson, showHud]);
 
+  const _queueMissingSheetChannelRows = useCallback(async items => {
+    const sheetMap = await loadSheetMap();
+    if (!sheetMap) return;
+    const videosById = new Map(playlistRef.current.map(video => [video.id, video]));
+    const proposals = [];
+    items.forEach(item => {
+      const video = (item.id && videosById.get(item.id)) ||
+        playlistRef.current.find(candidate => item.sourcePath && candidate.sourcePath === item.sourcePath);
+      if (!video) return;
+      const fileName = video.name || video.sourcePath?.split('/').pop() || '';
+      if (!fileName) return;
+      const existingRows = sheetMap.get(normalizeName(fileName)) || [];
+      const segmentModes = Object.entries(item.segments || {})
+        .filter(([mode, segments]) =>
+          SEGMENT_MODES.some(candidate => candidate.id === mode) &&
+          Array.isArray(segments) && segments.length > 0
+        );
+      segmentModes.forEach(([mode, segments]) => {
+        const alreadyInSheet = existingRows.some(row =>
+          resolveSegmentModeFromMeta(row.analogDigital, row.cameraType) === mode
+        );
+        if (alreadyInSheet) return;
+        const thermal = mode.startsWith('thermal_');
+        const sourceRow = existingRows.find(row =>
+          String(row.cameraType || '').toLowerCase().includes('thermal') === thermal
+        ) || existingRows[0];
+        const sourceIsThermal = /thermal|infrared/i.test(sourceRow?.cameraType || '');
+        const modeLabel = SEGMENT_MODES.find(candidate => candidate.id === mode)?.label || mode;
+        proposals.push({
+          id: `${video.fileKey || video.id}:${mode}`,
+          status: 'pending',
+          videoId: video.id,
+          fileName,
+          mode,
+          modeLabel,
+          segmentCount: segments.length,
+          segments: segments.map(segment => ({ start: Number(segment.start) || 0, end: Number(segment.end) || 0 })),
+          detectedAt: new Date().toISOString(),
+          row: {
+            link: sourceRow?.link || video.sheetLink || '',
+            double: '',
+            status: sourceRow?.status || 'to cut',
+            cameraType: thermal
+              ? (sourceIsThermal ? sourceRow.cameraType : 'Thermal')
+              : (sourceRow && !sourceIsThermal ? sourceRow.cameraType : 'Optical'),
+            labels: sourceRow?.labels || '',
+            analogDigital: mode.includes('analog') ? 'Analog' : 'Digital',
+            cuttedLink: '',
+            fileName
+          }
+        });
+      });
+    });
+    if (proposals.length === 0) return;
+    setAdminAiSheetSuggestions(previous => {
+      const byId = new Map(previous.map(item => [item.id, item]));
+      proposals.forEach(proposal => {
+        const current = byId.get(proposal.id);
+        if (!current || current.status === 'pending') byId.set(proposal.id, { ...current, ...proposal });
+      });
+      return Array.from(byId.values()).sort((left, right) =>
+        String(right.detectedAt).localeCompare(String(left.detectedAt))
+      );
+    });
+  }, [loadSheetMap, playlistRef]);
+
+  const confirmAiSheetSuggestion = useCallback(async suggestionId => {
+    const suggestion = adminAiSheetSuggestions.find(item => item.id === suggestionId);
+    if (!suggestion || suggestion.status !== 'pending' || aiSheetAppendInFlightRef.current.has(suggestionId)) return;
+    const confirmed = window.confirm(
+      `Додати в Google Sheets новий рядок для ${suggestion.fileName} · ${suggestion.modeLabel}?\n\n` +
+      'Буде додано один рядок для каналу відео.'
+    );
+    if (!confirmed) return;
+    aiSheetAppendInFlightRef.current.add(suggestionId);
+    setAdminAiSheetSuggestions(previous => previous.map(item =>
+      item.id === suggestionId ? { ...item, status: 'saving', error: null } : item
+    ));
+    try {
+      const result = await fetchAdminJson('/sheet/append-ai-channel-row', {
+        method: 'POST',
+        json: { row: { ...suggestion.row, mode: suggestion.mode } },
+        silent: true,
+        returnErrorPayload: true
+      });
+      if (!result?.ok) {
+        const error = result?.error || 'sheet_ai_row_append_failed';
+        setAdminAiSheetSuggestions(previous => previous.map(item =>
+          item.id === suggestionId ? { ...item, status: 'pending', error } : item
+        ));
+        showHud(error === 'sheet_write_not_configured'
+          ? 'Підключи Service Account для запису в Google Sheets'
+          : 'Не вдалося додати рядок у Google Sheets');
+        return;
+      }
+      setAdminAiSheetSuggestions(previous => previous.map(item =>
+        item.id === suggestionId
+          ? { ...item, status: result.duplicate ? 'already_exists' : 'added', rowIndex: result.rowIndex || null, error: null }
+          : item
+      ));
+      sheetMapRef.current = null;
+      loadSheetMap();
+      showHud(result.duplicate ? 'Такий канал уже є в таблиці' : 'Новий канал додано в Google Sheets');
+    } finally {
+      aiSheetAppendInFlightRef.current.delete(suggestionId);
+    }
+  }, [adminAiSheetSuggestions, fetchAdminJson, loadSheetMap, showHud]);
+
+  const dismissAiSheetSuggestion = useCallback(suggestionId => {
+    setAdminAiSheetSuggestions(previous => previous.map(item =>
+      item.id === suggestionId && item.status === 'pending'
+        ? { ...item, status: 'dismissed' }
+        : item
+    ));
+  }, []);
+
   const buildSnapshotPayload = useCallback(() => {
     const serializeEdit = edit => ({
       trim: edit.trim,
@@ -502,6 +703,7 @@ export default function useAdmin({
         sheetMode: v.sheetMode || '',
         sheetCameraType: v.sheetCameraType || '',
         sheetStatus: v.sheetStatus || '',
+        checked: !!v.checked,
         notRelevant: !!v.notRelevant,
         hasSnow: !!v.hasSnow,
         labels: Array.isArray(v.labels) ? v.labels : [],
@@ -535,9 +737,12 @@ export default function useAdmin({
   ]);
 
   const applySnapshotPayload = useCallback(
-    payload => {
+    (payload, { preserveLocalSelection = false } = {}) => {
       if (!payload) return;
       const savedList = Array.isArray(payload.playlist) ? payload.playlist : [];
+      const localSelection = preserveLocalSelection
+        ? getPlaylistSelection(loadFromStorage(STORAGE_KEYS.playlist, []))
+        : null;
       const migratedEdits = { ...(payload.edits || {}) };
       const normalized = savedList
         .filter(item => item?.fileKey)
@@ -574,7 +779,12 @@ export default function useAdmin({
             ...(stableServerKey ? { id: stableServerKey, fileKey: stableServerKey } : {}),
             url: null,
             file: null,
-            checked: false,
+            checked: preserveLocalSelection
+              ? getPlaylistItemChecked(
+                  stableServerKey ? { ...item, id: stableServerKey, fileKey: stableServerKey } : item,
+                  localSelection
+                )
+              : Boolean(item.checked),
             isLoading: false,
             suffix: item.suffix || '',
             sheetRow: item.sheetRow || null,
@@ -617,7 +827,11 @@ export default function useAdmin({
       if (typeof prefsPayload.sidebarWidth === 'number')
         setSidebarWidth(prefsPayload.sidebarWidth);
       if (typeof prefsPayload.adminBaseUrl === 'string')
-        setAdminBaseUrl(prefsPayload.adminBaseUrl);
+        setAdminBaseUrl(
+          IS_REMOTE_HOST && /localhost|127\.0\.0\.1/.test(prefsPayload.adminBaseUrl)
+            ? ''
+            : prefsPayload.adminBaseUrl
+        );
       if (typeof prefsPayload.overwriteOutputs === 'boolean')
         setOverwriteOutputs(prefsPayload.overwriteOutputs);
       saveToStorage(STORAGE_KEYS.playlist, savedList);
@@ -733,6 +947,8 @@ export default function useAdmin({
       return;
     }
     const currentList = playlistRef.current.length ? playlistRef.current : playlist;
+    const sheetMap = await loadSheetMap();
+    if (!sheetMap) return;
     const fileKeyCounts = getFileKeyCounts(currentList);
     const fileKeyVariants = getFileKeyVariants(currentList);
     const skipped = [];
@@ -740,19 +956,10 @@ export default function useAdmin({
     const useBatchSuffix = selected.length > 0;
     targets.forEach(video => {
       const edit = edits[video.id] || DEFAULT_EDIT_STATE;
-      const baseVariants = getVideoChannelVariants(video);
-      const existing = new Set(baseVariants.map(item => item.channelMode).filter(Boolean));
-      const variants = [...baseVariants];
-      SEGMENT_MODES.forEach(mode => {
-        if (existing.has(mode.id)) return;
-        const segs = getSegmentsForMode(edit, mode.id);
-        if (!Array.isArray(segs) || segs.length === 0) return;
-        variants.push({
-          ...video,
-          channelMode: mode.id,
-          suffix: getSuffixForSegmentMode(mode.id)
-        });
+      const baseVariants = getVideoChannelVariants({
+        ...video, channels: buildChannelsFromEntries(sheetMap.get(normalizeName(video.name)) || [])
       });
+      const variants = baseVariants;
       let lastJobIndex = null;
       let lastRenameLine = null;
       variants.forEach(variant => {
@@ -763,9 +970,7 @@ export default function useAdmin({
         const hasAnySegments = Array.isArray(modeSegments) && modeSegments.length > 0;
         const jobs = [];
 
-        if (!hasAnySegments) {
-          jobs.push({ video: variant, segmentsOverride: undefined, labelSuffix: '' });
-        } else {
+        if (hasAnySegments) {
           if (normalSegments.length > 0) {
             jobs.push({ video: variant, segmentsOverride: normalSegments, labelSuffix: '' });
           }
@@ -862,6 +1067,7 @@ export default function useAdmin({
     getFileKeyVariants,
     getVideoChannelVariants,
     loadAdminJob,
+    loadSheetMap,
     overwriteOutputs,
     playlist,
     playlistRef,
@@ -896,6 +1102,7 @@ export default function useAdmin({
     const skipped = [];
     let expectedDuration = 0;
     const sheetMap = await loadSheetMap();
+    if (!sheetMap) return;
 
     targets.forEach(video => {
       if (video.notRelevant) {
@@ -907,19 +1114,10 @@ export default function useAdmin({
         return;
       }
       const edit = edits[video.id] || DEFAULT_EDIT_STATE;
-      const baseVariants = getVideoChannelVariants(video);
-      const existingModes = new Set(baseVariants.map(item => item.channelMode).filter(Boolean));
-      const variants = [...baseVariants];
-      SEGMENT_MODES.forEach(mode => {
-        if (existingModes.has(mode.id)) return;
-        const segments = getSegmentsForMode(edit, mode.id);
-        if (!Array.isArray(segments) || segments.length === 0) return;
-        variants.push({
-          ...video,
-          channelMode: mode.id,
-          suffix: getSuffixForSegmentMode(mode.id)
-        });
+      const baseVariants = getVideoChannelVariants({
+        ...video, channels: buildChannelsFromEntries(sheetMap.get(normalizeName(video.name)) || [])
       });
+      const variants = baseVariants;
 
       variants.forEach(variant => {
         const channelMode = variant.channelMode || getSegmentModeForVideo(variant);
@@ -933,9 +1131,7 @@ export default function useAdmin({
           : [];
         const hasSegments = Array.isArray(modeSegments) && modeSegments.length > 0;
         const jobs = [];
-        if (!hasSegments) {
-          jobs.push({ suffix: baseSuffix, segments: undefined, snow: false });
-        } else {
+        if (hasSegments) {
           if (regularSegments.length > 0) {
             jobs.push({ suffix: baseSuffix, segments: regularSegments, snow: false });
           }
@@ -967,7 +1163,16 @@ export default function useAdmin({
           }
 
           processingLines.push(`# ${video.name || video.id} → ${result.outputName}`);
+          processingLines.push(`printf 'CLIPCHAMP_RENDER_START %s\\n' ${shellQuote(result.outputName)}`);
+          processingLines.push('if (');
+          processingLines.push('set -e');
           processingLines.push(...result.lines, '');
+          processingLines.push('); then');
+          processingLines.push(`  printf 'CLIPCHAMP_RENDER_DONE %s\\n' ${shellQuote(result.outputName)}`);
+          processingLines.push('else');
+          processingLines.push(`  printf 'CLIPCHAMP_RENDER_FAILED %s\\n' ${shellQuote(result.outputName)}`);
+          processingLines.push('  CLIPCHAMP_EXPORT_FAILED=1');
+          processingLines.push('fi', '');
           const mapEntries = sheetMap?.get(normalizeName(video.name)) || [];
           const matchingEntry =
             mapEntries.find(
@@ -1071,11 +1276,11 @@ export default function useAdmin({
             (item.sourcePath && bySource.get(item.sourcePath));
           if (!target) return;
           const rawSegments = item.segments || {};
-          const expectedModes = getExpectedModesForAi(target);
-          const labels = Object.keys(rawSegments).filter(label => modeSet.has(label));
-          const filteredLabels =
-            expectedModes.length > 0 ? labels.filter(label => expectedModes.includes(label)) : labels;
-          if (filteredLabels.length === 0) return;
+          const allowedModes = new Set((target.channels || [])
+            .filter(channel => channel.sheetRow)
+            .map(channel => channel.mode));
+          const labels = Object.keys(rawSegments).filter(label => modeSet.has(label) && allowedModes.has(label));
+          if (labels.length === 0) return;
           const existing = next[target.id] || DEFAULT_EDIT_STATE;
           const baseSets = normalizeSegmentSets(
             existing.segmentSets,
@@ -1083,7 +1288,7 @@ export default function useAdmin({
             existing.segmentMode || 'digital'
           );
           const nextSets = { ...baseSets };
-          filteredLabels.forEach(label => {
+          labels.forEach(label => {
             const list = Array.isArray(rawSegments[label]) ? rawSegments[label] : [];
             nextSets[label] = list
               .map(seg => ({
@@ -1093,9 +1298,9 @@ export default function useAdmin({
               }))
               .filter(seg => seg.end > seg.start);
           });
-          const nextMode = filteredLabels.includes(existing.segmentMode)
+          const nextMode = labels.includes(existing.segmentMode)
             ? existing.segmentMode
-            : filteredLabels[0];
+            : labels[0];
           next[target.id] = {
             ...existing,
             segmentMode: nextMode,
@@ -1106,39 +1311,8 @@ export default function useAdmin({
         return next;
       });
 
-      setPlaylist(prev => {
-        const updates = new Map();
-        items.forEach(item => {
-          const target =
-            (item.id && byId.get(item.id)) ||
-            (item.sourcePath && bySource.get(item.sourcePath));
-          if (!target) return;
-          const rawSegments = item.segments || {};
-          const expectedModes = getExpectedModesForAi(target);
-          const labels = Object.keys(rawSegments).filter(label => modeSet.has(label));
-          const filteredLabels =
-            expectedModes.length > 0 ? labels.filter(label => expectedModes.includes(label)) : labels;
-          if (filteredLabels.length === 0) return;
-          const channelCandidates = filteredLabels.map(label => ({
-            mode: label,
-            suffix: getSuffixForSegmentMode(label),
-            sheetMode: '',
-            sheetCameraType: '',
-            sheetStatus: '',
-            sheetRow: null
-          }));
-          const merged = mergeChannelLists(target.channels, channelCandidates);
-          updates.set(target.id, {
-            ...target,
-            channels: merged,
-            suffix: merged[0]?.suffix || target.suffix
-          });
-        });
-        if (updates.size === 0) return prev;
-        return prev.map(item => updates.get(item.id) || item);
-      });
     },
-    [getExpectedModesForAi, playlistRef, setEdits, setPlaylist]
+    [playlistRef, setEdits]
   );
 
   const applyLogoDetections = useCallback(
@@ -1211,12 +1385,13 @@ export default function useAdmin({
   const resolveAiTargets = useCallback(
     overrideIds => {
       if (overrideIds && overrideIds.size) {
-        return playlist.filter(item => overrideIds.has(item.id));
+        return playlist.filter(item => overrideIds.has(item.id) && getExpectedModesForAi(item).length > 0);
       }
       const selected = playlist.filter(p => p.checked);
-      return selected.length > 0 ? selected : activeVideo ? [activeVideo] : [];
+      const targets = selected.length > 0 ? selected : activeVideo ? [activeVideo] : [];
+      return targets.filter(item => getExpectedModesForAi(item).length > 0);
     },
-    [activeVideo, playlist]
+    [activeVideo, getExpectedModesForAi, playlist]
   );
 
   const buildAiQueue = useCallback((targets, provider) => {
@@ -1235,7 +1410,7 @@ export default function useAdmin({
   const runAdminAiSegments = useCallback(async (overrideIds = null) => {
     const targets = resolveAiTargets(overrideIds);
     if (targets.length === 0) {
-      showHud("Оберіть відео");
+      showHud("Немає вибраних відео з каналами таблиці");
       return;
     }
     const files = targets
@@ -1266,7 +1441,7 @@ export default function useAdmin({
     setAdminAiStats(null);
     setAdminAiLastRequestAt(Date.now());
     setAdminAiLastError(null);
-    adminAiAbortRef.current = { aborted: false, controller: null };
+    adminAiAbortRef.current = { aborted: false, controller: null, controllers: [] };
     let processed = 0;
     let failures = targets.length - files.length;
 
@@ -1344,241 +1519,528 @@ export default function useAdmin({
     showHud
   ]);
 
-  const runAdminAiSegmentsRemote = useCallback(async (overrideIds = null) => {
+  const runAdminAiSegmentsNgrok = useCallback(async (overrideIds = null) => {
     const targets = resolveAiTargets(overrideIds);
     if (targets.length === 0) {
-      showHud("Оберіть відео");
+      showHud('Немає вибраних відео з каналами таблиці');
       return;
     }
     const remoteBase = String(adminConfig.aiRemoteUrl || '').trim().replace(/\/+$/, '');
     if (!remoteBase) {
-      showHud("Вкажіть Colab URL");
+      showHud('Вкажи URL Cloudflare або ngrok тунелю');
       return;
     }
     const fps = Number.isFinite(adminConfig.aiFps) ? adminConfig.aiFps : 1;
     const minDuration = Number.isFinite(adminConfig.aiMinDuration) ? adminConfig.aiMinDuration : 2;
-    const modeSet = new Set(SEGMENT_MODES.map(mode => mode.id));
-    const remoteHeaders = remoteBase.includes('.ngrok-free.app')
-      ? { 'ngrok-skip-browser-warning': 'true' }
-      : undefined;
-    let failures = 0;
-    const items = [];
-    const updateStats = () =>
-      setAdminAiStats({
-        processed: items.length,
-        failed: failures
-      });
-
-    buildAiQueue(targets, 'colab');
+    const proxyBase = `${adminBaseUrl.replace(/\/+$/, '')}/ai/remote-proxy/${encodeURIComponent(remoteBase)}`;
+    let processed = 0;
+    let failed = 0;
+    const updateStats = () => setAdminAiStats({ processed, failed });
+    buildAiQueue(targets, 'ngrok');
     setAdminAiLoading(true);
     setAdminAiStats(null);
     setAdminAiLastRequestAt(Date.now());
     setAdminAiLastError(null);
-    adminAiAbortRef.current = { aborted: false, controller: null };
+    adminAiAbortRef.current = { aborted: false, controller: null, controllers: [] };
+
     for (const target of targets) {
       if (adminAiAbortRef.current.aborted) break;
-      setAiQueueStatus(target.id, {
-        status: 'running',
-        error: null,
-        errorDetail: null,
-        taskId: null
-      });
       const controller = new AbortController();
       adminAiAbortRef.current.controller = controller;
-      let fileBlob = null;
-      let fileName = target?.name || 'video.mp4';
-      if (target?.file instanceof Blob) {
-        fileBlob = target.file;
-        if (target.file.name) fileName = target.file.name;
-      } else if (target?.sourcePath) {
-        const base = adminBaseUrl.replace(/\/+$/, '');
-        const url = `${base}/file?path=${encodeURIComponent(target.sourcePath)}`;
-        try {
-          const res = await fetch(url, { signal: controller.signal });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          fileBlob = await res.blob();
-          fileName = target.sourcePath.split('/').pop() || fileName;
-        } catch {
-          failures += 1;
-          setAiQueueStatus(target.id, { status: 'error', error: 'fetch_failed' });
-          updateStats();
-          continue;
-        }
-      }
-      if (!fileBlob) {
-        failures += 1;
-        setAiQueueStatus(target.id, { status: 'error', error: 'no_source' });
-        updateStats();
-        continue;
-      }
-
-      const formData = new FormData();
-      formData.append('video', fileBlob, fileName);
-      formData.append('fps', String(fps));
-      formData.append('min_duration', String(minDuration));
-
+      setAiQueueStatus(target.id, { status: 'running', error: null, errorDetail: null, taskId: null });
       try {
-        const res = await fetch(`${remoteBase}/predict`, {
-          method: 'POST',
-          body: formData,
-          headers: remoteHeaders,
-          signal: controller.signal
+        let fileBlob = target?.file instanceof Blob ? target.file : null;
+        let fileName = target?.file?.name || target?.name || 'video.mp4';
+        if (!fileBlob && target?.sourcePath) {
+          const url = `${adminBaseUrl.replace(/\/+$/, '')}/file?path=${encodeURIComponent(target.sourcePath)}`;
+          const response = await fetch(url, { signal: controller.signal });
+          if (!response.ok) throw new Error(`Не вдалося прочитати відео з локального сервера: HTTP ${response.status}`);
+          fileBlob = await response.blob();
+          fileName = target.sourcePath.split('/').pop() || fileName;
+        }
+        if (!fileBlob) throw new Error('Не знайдено файл відео для старого Colab');
+
+        const formData = new FormData();
+        formData.append('video', fileBlob, fileName);
+        formData.append('fps', String(fps));
+        formData.append('min_duration', String(minDuration));
+        const response = await fetch(`${proxyBase}/predict`, {
+          method: 'POST', body: formData, signal: controller.signal
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const queuedResult = await res.json();
-        if (!queuedResult?.ok) {
-          failures += 1;
-          setAiQueueStatus(target.id, { status: 'error', error: 'remote_failed' });
+        if (!response.ok) throw new Error(`Старий Colab відповів HTTP ${response.status}`);
+        const queued = await response.json();
+        if (!queued?.ok) throw new Error(queued?.error || 'Старий Colab не прийняв відео');
+        if (queued.task_id) setAiQueueStatus(target.id, { taskId: queued.task_id });
+        const result = queued.status === 'queued' && queued.task_id
+          ? await pollRemoteAiTask({ baseUrl: proxyBase, taskId: queued.task_id, signal: controller.signal })
+          : queued;
+        setAdminAiRemoteState({ status: 'ok', lastCheckedAt: Date.now(), lastHttp: response.status, lastError: null });
+        const raw = normalizeRemoteAiSegments(result);
+        const allowedModes = new Set(getExpectedModesForAi(target));
+        const segments = Object.fromEntries(Object.entries(raw).filter(([mode, values]) =>
+          allowedModes.has(mode) && Array.isArray(values) && values.length > 0
+        ));
+        const segmentCount = countAiSegments(segments);
+        if (!segmentCount) {
+          const detail = describeRemoteAiResponse(result);
+          failed += 1;
+          setAdminAiLastError(`${fileName}: Colab завершив task, але сегментів не знайдено. ${detail}`);
+          setAiQueueStatus(target.id, { status: 'error', error: 'no_segments', errorDetail: detail, segmentCount: 0 });
           updateStats();
           continue;
         }
-        if (queuedResult.task_id) {
-          setAiQueueStatus(target.id, { taskId: queuedResult.task_id });
-        }
-        const data =
-          queuedResult.status === 'queued' && queuedResult.task_id
-            ? await pollRemoteAiTask({
-                baseUrl: remoteBase,
-                taskId: queuedResult.task_id,
-                headers: remoteHeaders,
-                signal: controller.signal
-              })
-            : queuedResult;
-        setAdminAiRemoteState({
-          status: 'ok',
-          lastCheckedAt: Date.now(),
-          lastHttp: res.status,
-          lastError: null
-        });
-        const rawSegments = normalizeRemoteAiSegments(data);
-        const allowedModes = getExpectedModesForAi(target);
-        const filtered = {};
-        Object.keys(rawSegments).forEach(label => {
-          if (!modeSet.has(label)) return;
-          if (allowedModes.length > 0 && !allowedModes.includes(label)) return;
-          filtered[label] = rawSegments[label];
-        });
-        const segmentCount = countAiSegments(filtered);
-        if (segmentCount === 0) {
-          failures += 1;
-          const diagnostic = describeRemoteAiResponse(data);
-          const expected = allowedModes.length > 0 ? allowedModes.join(', ') : 'будь-який';
-          const taskLabel = queuedResult.task_id ? `task ${queuedResult.task_id}; ` : '';
-          const errorDetail = `${taskLabel}${diagnostic}; очікувався канал: ${expected}`;
-          setAdminAiLastError(
-            `${fileName}: Colab завершив task, але inference повернув порожній result. ` +
-              `Canvas і parser отримали 0 сегментів. ${errorDetail}`
-          );
-          setAiQueueStatus(target.id, {
-            status: 'error',
-            error: 'no_segments',
-            errorDetail,
-            segmentCount: 0
-          });
-          updateStats();
-          continue;
-        }
-        const completedItem = {
-          id: target.id,
-          sourcePath: target.sourcePath || '',
-          segments: filtered
-        };
-        items.push(completedItem);
-        applyAiSegments([completedItem]);
-        setAiQueueStatus(target.id, {
-          status: 'done',
-          error: null,
-          errorDetail: null,
-          segmentCount
-        });
+        applyAiSegments([{ id: target.id, sourcePath: target.sourcePath || '', segments }]);
+        processed += 1;
+        setAiQueueStatus(target.id, { status: 'done', error: null, errorDetail: null, segmentCount });
         updateStats();
         showHud(`AI готово: ${fileName}`);
-      } catch (e) {
-        failures += 1;
-        setAdminAiLastError(String(e?.message || e));
-        setAdminAiRemoteState({
-          status: 'error',
-          lastCheckedAt: Date.now(),
-          lastHttp: null,
-          lastError: String(e?.message || e)
-        });
-        setAiQueueStatus(target.id, {
-          status: 'error',
-          error: 'remote_error',
-          errorDetail: String(e?.message || e)
-        });
+      } catch (error) {
+        if (adminAiAbortRef.current.aborted) break;
+        failed += 1;
+        const detail = String(error?.message || error);
+        setAdminAiRemoteState({ status: 'error', lastCheckedAt: Date.now(), lastHttp: null, lastError: detail });
+        setAiQueueStatus(target.id, { status: 'error', error: 'ngrok_failed', errorDetail: detail });
+        setAdminAiLastError(`${target.name || target.id}: ${detail}`);
         updateStats();
       }
     }
     adminAiAbortRef.current.controller = null;
     setAdminAiLoading(false);
     if (adminAiAbortRef.current.aborted) {
-      setAdminAiQueue(prev =>
-        prev.map(item =>
-          item.status === 'running' || item.status === 'pending'
-            ? { ...item, status: 'error', error: 'stopped' }
-            : item
-        )
-      );
-      showHud("AI зупинено");
+      setAdminAiQueue(prev => prev.map(item => ['running', 'pending'].includes(item.status)
+        ? { ...item, status: 'cancelled', error: 'stopped' }
+        : item));
+      showHud('Старий Colab зупинено');
       return;
     }
-    if (items.length === 0) {
-      showHud(failures > 0 ? "AI Colab не відпрацював" : "Немає сегментів");
-      return;
-    }
-    setAdminAiStats({
-      processed: items.length,
-      failed: failures
-    });
-    showHud(failures > 0 ? `AI Colab: ${items.length}, помилок: ${failures}` : `AI Colab: ${items.length}`);
+    showHud(processed ? `Старий Colab: готово ${processed}, помилок ${failed}` : failed ? 'Старий Colab не відпрацював' : 'Немає сегментів');
   }, [
-    adminBaseUrl,
+    adminBaseUrl, adminConfig.aiFps, adminConfig.aiMinDuration, adminConfig.aiRemoteUrl,
+    applyAiSegments, buildAiQueue, resolveAiTargets, setAiQueueStatus, showHud
+  ]);
+
+  const runAdminAiSegmentsRemote = useCallback(async (overrideIds = null) => {
+    const targets = resolveAiTargets(overrideIds);
+    if (targets.length === 0) {
+      showHud("Немає вибраних відео з каналами таблиці");
+      return;
+    }
+    if (!adminConfig.aiDriveRemote) {
+      showHud("Спочатку налаштуй rclone у вкладці Google Drive");
+      return;
+    }
+    const batchTimestamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '_');
+    const batchId = `${batchTimestamp}Z-${createId()}`;
+    const fps = Number.isFinite(adminConfig.aiFps) ? adminConfig.aiFps : 1;
+    const minDuration = Number.isFinite(adminConfig.aiMinDuration) ? adminConfig.aiMinDuration : 2;
+    const batchItems = targets.map(target => ({
+      id: target.id,
+      name: target.name || target.fileKey || target.id,
+      sourcePath: target.sourcePath || '',
+      status: 'pending',
+      provider: 'colab',
+      batchId,
+      clientJobId: createId()
+    }));
+    setAdminAiQueue(batchItems);
+    setAdminAiLastProvider('colab');
+    setAdminAiLoading(true);
+    setAdminAiStats(null);
+    setAdminAiLastRequestAt(Date.now());
+    setAdminAiLastError(null);
+    adminAiAbortRef.current = { aborted: false, controller: null, controllers: [] };
+    const setStatus = (id, patch, message) => setAdminAiQueue(prev => prev.map(item => {
+      if (item.id !== id) return item;
+      const logs = message
+        ? [...(Array.isArray(item.logs) ? item.logs : []), { at: new Date().toISOString(), message }].slice(-40)
+        : item.logs;
+      return { ...item, ...patch, ...(logs ? { logs } : {}) };
+    }));
+    const started = await fetchAdminJson('/ai/drive-batch/start', {
+      method: 'POST', json: { batchId }, silent: true, returnErrorPayload: true
+    });
+    if (!started?.ok) {
+      const detail = started?.detail || started?.error || (started === null
+        ? 'Локальний API не відповів. Повністю перезапусти редактор через START.command.'
+        : 'rclone_failed');
+      setAdminAiQueue(prev => prev.map(item => ({
+        ...item,
+        status: 'error',
+        error: 'drive_start_failed',
+        errorDetail: detail,
+        logs: [...(Array.isArray(item.logs) ? item.logs : []), { at: new Date().toISOString(), message: `Не вдалося створити папку черги у Drive: ${detail}` }].slice(-40)
+      })));
+      setAdminAiLastError(`Не вдалося створити папку черги в Drive: ${detail}`);
+      setAdminAiLoading(false);
+      return;
+    }
+
+    let cursor = 0;
+    let uploadFailures = 0;
+    let uploadsFinished = false;
+    const lastLoggedPercent = new Map();
+    const lastProgressSignature = new Map();
+    const lastRemoteStatus = new Map(batchItems.map(item => [item.id, 'pending']));
+    const progressPolling = (async () => {
+      while (!uploadsFinished && !adminAiAbortRef.current.aborted) {
+        const snapshot = await fetchAdminJson(`/ai/drive-batch/${encodeURIComponent(batchId)}/progress`, {
+          silent: true, returnErrorPayload: true
+        });
+        if (adminAiAbortRef.current.aborted) break;
+        if (snapshot?.ok) {
+          for (const progress of snapshot.items || []) {
+            const target = targets.find(candidate => batchItems.some(item => item.id === candidate.id && item.clientJobId === progress.taskId));
+            if (!target) continue;
+            const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+            const signature = `${percent}:${progress.bytesTransferred || 0}:${progress.speed || ''}:${progress.eta || ''}:${progress.phase || ''}`;
+            if (lastProgressSignature.get(progress.taskId) === signature) continue;
+            lastProgressSignature.set(progress.taskId, signature);
+            const priorPercent = lastLoggedPercent.get(progress.taskId) ?? -10;
+            const shouldLog = percent >= 100 || percent >= priorPercent + 10;
+            if (shouldLog) lastLoggedPercent.set(progress.taskId, percent);
+            setStatus(target.id, {
+              status: 'uploading',
+              uploadProgress: {
+                percent,
+                bytesTransferred: progress.bytesTransferred,
+                totalBytes: progress.totalBytes,
+                speed: progress.speed,
+                eta: progress.eta,
+                phase: progress.phase
+              }
+            }, shouldLog
+              ? (percent >= 100 ? 'Передавання відео в Drive завершено; зберігаю запис задачі.' : `Передавання оригіналу в Google Drive: ${percent}%.`)
+              : null);
+          }
+        }
+        await new Promise(resolve => window.setTimeout(resolve, 750));
+      }
+    })();
+    const uploadWorker = async () => {
+      while (cursor < targets.length && !adminAiAbortRef.current.aborted) {
+        const index = cursor++;
+        const target = targets[index];
+        const item = batchItems[index];
+        if (!target.sourcePath) {
+          uploadFailures += 1;
+          setStatus(target.id, { status: 'error', error: 'source_path_missing' }, 'Не знайдено вихідний файл на комп’ютері.');
+          continue;
+        }
+        setStatus(target.id, { status: 'uploading', error: null, uploadProgress: { percent: 0, phase: 'uploading' } }, 'Почав передавання оригіналу в Google Drive.');
+        const controller = new AbortController();
+        adminAiAbortRef.current.controllers.push(controller);
+        let result;
+        try {
+          result = await fetchAdminJson(`/ai/drive-batch/${encodeURIComponent(batchId)}/files`, {
+            method: 'POST',
+            json: {
+              taskId: item.clientJobId,
+              sourcePath: target.sourcePath,
+              allowedModes: getExpectedModesForAi(target),
+              fps,
+              imageSize: 320,
+              minDuration,
+              smoothWindow: 3
+            },
+            silent: true,
+            returnErrorPayload: true,
+            signal: controller.signal
+          });
+        } finally {
+          adminAiAbortRef.current.controllers = adminAiAbortRef.current.controllers.filter(active => active !== controller);
+        }
+        if (adminAiAbortRef.current.aborted) {
+          setStatus(target.id, { status: 'cancelled', error: 'stopped', errorDetail: null }, 'Передавання зупинено.');
+          continue;
+        }
+        if (!result?.ok) {
+          uploadFailures += 1;
+          const detail = result?.detail || result?.error || (result === null
+            ? 'Локальний API не відповів. Перезапусти редактор через START.command.'
+            : 'upload_failed');
+          setStatus(target.id, {
+            status: 'error', error: 'drive_upload_failed',
+            errorDetail: detail
+          }, `Не вдалося передати відео: ${detail}`);
+          continue;
+        }
+        if (result.status === 'error') {
+          uploadFailures += 1;
+          setStatus(target.id, {
+            status: 'error', error: 'drive_upload_failed',
+            errorDetail: result.error || 'video_upload_failed', taskId: result.task_id
+          }, `Помилка передавання в Drive: ${result.error || 'невідома помилка'}`);
+          continue;
+        }
+        setStatus(target.id, {
+          status: 'accepted',
+          taskId: result.task_id,
+          drivePath: result.drivePath,
+          error: null,
+          errorDetail: null,
+          uploadProgress: { percent: 100, phase: 'uploaded' }
+        }, 'Оригінал збережено в Google Drive. Colab ще має забрати його з черги.');
+        lastRemoteStatus.set(target.id, 'accepted');
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, targets.length) }, () => uploadWorker()));
+    uploadsFinished = true;
+    await progressPolling;
+    if (adminAiAbortRef.current.aborted) {
+      setAdminAiLoading(false);
+      showHud('Передачу зупинено; вже прийняті файли залишились у Google Drive');
+      return;
+    }
+    const acceptedCount = targets.length - uploadFailures;
+    setAdminAiStats({ accepted: acceptedCount, failed: uploadFailures, processed: 0 });
+    if (acceptedCount === 0) {
+      setAdminAiLoading(false);
+      showHud('Жодне відео не потрапило в Google Drive');
+      return;
+    }
+    showHud(`${acceptedCount} відео прийнято у Drive; localhost можна вимкнути`);
+
+    try {
+      let remaining = acceptedCount;
+      const missingJobSince = new Map();
+      while (remaining > 0 && !adminAiAbortRef.current.aborted) {
+        const snapshot = await fetchAdminJson(`/ai/drive-batch/${encodeURIComponent(batchId)}`, { silent: true });
+        if (!snapshot?.ok) throw new Error(snapshot?.detail || snapshot?.error || 'drive_status_failed');
+        const byTask = new Map((snapshot.items || []).map(job => [job.task_id, job]));
+        let done = 0;
+        let failed = uploadFailures;
+        remaining = 0;
+        for (const target of targets) {
+          const item = batchItems.find(candidate => candidate.id === target.id);
+          if (!item) continue;
+          const job = byTask.get(item.clientJobId);
+          if (!job) {
+            const firstMissingAt = missingJobSince.get(item.clientJobId) || Date.now();
+            missingJobSince.set(item.clientJobId, firstMissingAt);
+            if (Date.now() - firstMissingAt > 120000) {
+              failed += 1;
+              setStatus(target.id, { status: 'error', error: 'job_missing', errorDetail: 'Не знайшов запис задачі у Drive за 2 хвилини.' }, 'У Drive не з’явився запис задачі за 2 хвилини.');
+            } else {
+              remaining += 1;
+              setStatus(target.id, { status: 'accepted', errorDetail: 'Очікую запис задачі у Drive…' });
+            }
+            continue;
+          }
+          missingJobSince.delete(item.clientJobId);
+          if (job?.status === 'done') {
+            done += 1;
+            if (!item.applied) {
+              const raw = normalizeRemoteAiSegments(job);
+              const filtered = Object.fromEntries(Object.entries(raw).filter(([label]) =>
+                SEGMENT_MODES.some(mode => mode.id === label)
+              ));
+              const segmentCount = countAiSegments(filtered);
+              applyAiSegments([{ id: target.id, sourcePath: target.sourcePath || '', segments: filtered }]);
+              if (segmentCount > 0) {
+                item.applied = true;
+                setStatus(target.id, { status: 'done', applied: true, segmentCount, error: null }, `Colab завершив обробку; знайдено сегментів: ${segmentCount}.`);
+              } else {
+                failed += 1;
+                setStatus(target.id, { status: 'error', error: 'no_segments', errorDetail: describeRemoteAiResponse(job) }, 'Colab завершив відео, але не повернув сегментів.');
+              }
+            }
+          } else if (job?.status === 'error') {
+            failed += 1;
+            setStatus(target.id, { status: 'error', error: 'remote_error', errorDetail: job.error || 'Colab task failed' }, `Colab повідомив про помилку: ${job.error || 'невідома помилка'}`);
+          } else if (job?.status === 'cancelled') {
+            setStatus(target.id, { status: 'cancelled', error: 'stopped', errorDetail: null }, 'Задачу скасовано в Colab.');
+          } else {
+            remaining += 1;
+            const nextStatus = job?.status === 'processing' ? 'processing' : 'accepted';
+            const priorStatus = lastRemoteStatus.get(target.id);
+            lastRemoteStatus.set(target.id, nextStatus);
+            const processedFrames = Number(job?.processed_frames);
+            const frameCount = Number(job?.frame_count);
+            setStatus(target.id, {
+              status: nextStatus,
+              processingProgress: Number.isFinite(processedFrames) && Number.isFinite(frameCount) && frameCount > 0
+                ? { frames: processedFrames, totalFrames: frameCount, percent: Math.min(100, Math.round(processedFrames / frameCount * 100)) }
+                : null
+            }, priorStatus !== nextStatus
+              ? (nextStatus === 'processing' ? 'Colab почав обробляти відео.' : 'Відео в Drive; очікує на початок обробки Colab.')
+              : null);
+          }
+        }
+        setAdminAiStats({ accepted: acceptedCount, processed: done, failed });
+        if (remaining > 0) await new Promise(resolve => window.setTimeout(resolve, 4000));
+      }
+      showHud('Colab batch завершено; сегменти збережені у Drive');
+    } catch (error) {
+      setAdminAiLastError(`Відео вже у Drive. Статуси можна оновити пізніше: ${String(error?.message || error)}`);
+    } finally {
+      setAdminAiLoading(false);
+    }
+  }, [
     adminConfig.aiFps,
     adminConfig.aiMinDuration,
-    adminConfig.aiRemoteUrl,
+    adminConfig.aiDriveRemote,
     applyAiSegments,
-    buildAiQueue,
+    fetchAdminJson,
     getExpectedModesForAi,
     resolveAiTargets,
-    setAiQueueStatus,
     showHud
   ]);
 
-  const stopAdminAi = useCallback(() => {
+  const checkAdminAiDrive = useCallback(async () => {
+    const remote = String(adminConfig.aiDriveRemote || '').trim();
+    if (!remote) {
+      setAdminAiDriveCheck('Вкажи назву rclone remote, наприклад best2-my-drive.');
+      return false;
+    }
+    setAdminAiDriveCheck('Перевіряю Google Drive…');
+    const saved = await saveAdminConfig();
+    if (!saved) {
+      setAdminAiDriveCheck('Не вдалося зберегти налаштування. Перевір локальний сервер.');
+      return false;
+    }
+    const result = await fetchAdminJson('/ai/drive-batch/check', {
+      method: 'POST', json: { remote }, silent: true, returnErrorPayload: true
+    });
+    if (result?.ok) {
+      setAdminAiDriveCheck(`Drive підключений: ${remote}:best2_training`);
+      return true;
+    }
+    const detail = result?.detail || result?.error || 'Локальний сервер не відповів';
+    setAdminAiDriveCheck(`Не підключено: ${detail}`);
+    return false;
+  }, [adminConfig.aiDriveRemote, fetchAdminJson, saveAdminConfig]);
+
+  const refreshAdminAiBatch = useCallback(async () => {
+    const queue = adminAiQueue.filter(item => item.provider === 'colab' && item.batchId);
+    const batchId = queue.at(-1)?.batchId;
+    if (!batchId) {
+      showHud('Немає збереженої черги Colab');
+      return;
+    }
+    setAdminAiLoading(true);
+    try {
+      const snapshot = await fetchAdminJson(`/ai/drive-batch/${encodeURIComponent(batchId)}`, { silent: true });
+      if (!snapshot?.ok) throw new Error(snapshot?.detail || snapshot?.error || 'drive_status_failed');
+      const byTask = new Map((snapshot.items || []).map(job => [job.task_id, job]));
+      const updates = new Map();
+      let done = 0;
+      let failed = 0;
+      let remaining = 0;
+      for (const item of queue) {
+        if (item.batchId !== batchId) continue;
+        const withEvent = (patch, message) => {
+          const logs = message && item.status !== patch.status
+            ? [...(Array.isArray(item.logs) ? item.logs : []), { at: new Date().toISOString(), message }].slice(-40)
+            : item.logs;
+          return { ...item, ...patch, ...(logs ? { logs } : {}) };
+        };
+        if (!item.taskId) {
+          if (['pending', 'uploading'].includes(item.status)) {
+            failed += 1;
+            updates.set(item.id, withEvent({ status: 'error', error: 'upload_incomplete', errorDetail: 'Файл не встиг зберегтися в Drive. Повтори передачу.' }, 'Передавання не було завершене; файл не прийнято в Drive.'));
+          }
+          continue;
+        }
+        const job = byTask.get(item.taskId);
+        if (!job) {
+          remaining += 1;
+          continue;
+        }
+        if (job.status === 'done') {
+          done += 1;
+          const target = playlistRef.current.find(video => video.id === item.id);
+          if (!item.applied && target) {
+            const raw = normalizeRemoteAiSegments(job);
+            const filtered = Object.fromEntries(Object.entries(raw).filter(([label]) =>
+              SEGMENT_MODES.some(mode => mode.id === label)
+            ));
+            const segmentCount = countAiSegments(filtered);
+            applyAiSegments([{ id: item.id, sourcePath: item.sourcePath || '', segments: filtered }]);
+            const nextStatus = segmentCount > 0 ? 'done' : 'error';
+            updates.set(item.id, withEvent({ status: nextStatus, applied: segmentCount > 0, segmentCount, error: segmentCount > 0 ? null : 'no_segments', errorDetail: segmentCount > 0 ? null : describeRemoteAiResponse(job) }, segmentCount > 0 ? `Colab завершив обробку; знайдено сегментів: ${segmentCount}.` : 'Colab завершив відео, але не повернув сегментів.'));
+          } else {
+            if (target) applyAiSegments([{ id: item.id, sourcePath: item.sourcePath || '', segments: {} }]);
+            const segmentCount = item.segmentCount ?? countAiSegments(normalizeRemoteAiSegments(job));
+            updates.set(item.id, withEvent({ status: 'done', segmentCount, error: null }, `Colab завершив обробку; знайдено сегментів: ${segmentCount}.`));
+          }
+        } else if (job.status === 'error') {
+          failed += 1;
+          updates.set(item.id, withEvent({ status: 'error', error: 'remote_error', errorDetail: job.error || 'Colab task failed' }, `Colab повідомив про помилку: ${job.error || 'невідома помилка'}`));
+        } else if (job.status === 'cancelled') {
+          updates.set(item.id, withEvent({ status: 'cancelled', error: 'stopped', errorDetail: null }, 'Задачу скасовано в Colab.'));
+        } else {
+          remaining += 1;
+          const nextStatus = job.status === 'processing' ? 'processing' : 'accepted';
+          const processedFrames = Number(job.processed_frames);
+          const frameCount = Number(job.frame_count);
+          updates.set(item.id, withEvent({
+            status: nextStatus,
+            processingProgress: Number.isFinite(processedFrames) && Number.isFinite(frameCount) && frameCount > 0
+              ? { frames: processedFrames, totalFrames: frameCount, percent: Math.min(100, Math.round(processedFrames / frameCount * 100)) }
+              : null
+          }, nextStatus === 'processing' ? 'Colab почав обробляти відео.' : 'Відео в Drive; очікує на початок обробки Colab.'));
+        }
+      }
+      if (updates.size) setAdminAiQueue(prev => prev.map(item => updates.get(item.id) || item));
+      setAdminAiStats({ accepted: queue.length, processed: done, failed });
+      showHud(remaining ? `Статуси оновлено; у черзі ще ${remaining}` : 'Результати синхронізовано з Drive');
+    } catch (error) {
+      setAdminAiLastError(`Не вдалося прочитати чергу з Drive: ${String(error?.message || error)}`);
+    } finally {
+      setAdminAiLoading(false);
+    }
+  }, [adminAiQueue, applyAiSegments, fetchAdminJson, getExpectedModesForAi, playlistRef, showHud]);
+
+  const stopAdminAi = useCallback(async () => {
     adminAiAbortRef.current.aborted = true;
     if (adminAiAbortRef.current.controller) {
       adminAiAbortRef.current.controller.abort();
     }
+    adminAiAbortRef.current.controllers.forEach(controller => controller.abort());
+    const batchId = adminAiQueue.find(item => item.batchId)?.batchId;
+    let stopped = !batchId;
+    if (batchId) {
+      const result = await fetchAdminJson(`/ai/drive-batch/${encodeURIComponent(batchId)}/stop`, {
+        method: 'POST', json: {}, silent: true, returnErrorPayload: true
+      });
+      stopped = Boolean(result?.ok);
+      if (stopped) {
+        setAdminAiLastError(null);
+      } else {
+        setAdminAiLastError(`Не вдалося зупинити чергу в Drive: ${result?.detail || result?.error || 'сервер не відповів'}`);
+      }
+    }
     setAdminAiLoading(false);
-    setAdminAiLastError('stopped');
-    setAdminAiQueue(prev =>
-      prev.map(item =>
-        item.status === 'running' || item.status === 'pending'
-          ? { ...item, status: 'error', error: 'stopped' }
+    if (stopped) {
+      setAdminAiQueue(prev => prev.map(item =>
+        ['running', 'pending', 'uploading', 'accepted', 'processing'].includes(item.status)
+          ? { ...item, status: 'cancelled', error: 'stopped', errorDetail: null }
           : item
-      )
-    );
-    showHud("AI зупинено");
-  }, [showHud]);
+      ));
+    }
+    showHud(stopped ? (batchId ? 'Передачу і чергу Colab зупинено' : 'AI зупинено') : 'Передачу перервано; перевір стан черги в Drive');
+  }, [adminAiQueue, fetchAdminJson, showHud]);
 
-  const retryAdminAiFailed = useCallback(() => {
+  const retryAdminAiFailed = useCallback(async () => {
     const failed = adminAiQueue.filter(item => item.status === 'error');
     if (failed.length === 0) {
       showHud("Немає помилок");
       return;
     }
-    const ids = new Set(failed.map(item => item.id));
-    if (adminAiLastProvider === 'colab') {
-      runAdminAiSegmentsRemote(ids);
+    const groups = ['local', 'ngrok', 'colab'].map(provider => ({
+      provider,
+      ids: new Set(failed.filter(item => (item.provider || adminAiLastProvider) === provider).map(item => item.id))
+    })).filter(group => group.ids.size > 0);
+    if (groups.length === 0) {
+      showHud("Не вдалося визначити режим для повтору");
       return;
     }
-    if (adminAiLastProvider === 'local') {
-      runAdminAiSegments(ids);
-      return;
+    for (const group of groups) {
+      if (group.provider === 'local') await runAdminAiSegments(group.ids);
+      else if (group.provider === 'ngrok') await runAdminAiSegmentsNgrok(group.ids);
+      else await runAdminAiSegmentsRemote(group.ids);
     }
-    showHud("Невідомий режим AI");
-  }, [adminAiLastProvider, adminAiQueue, resolveAiTargets, runAdminAiSegments, runAdminAiSegmentsRemote, showHud]);
+  }, [adminAiLastProvider, adminAiQueue, runAdminAiSegments, runAdminAiSegmentsNgrok, runAdminAiSegmentsRemote, showHud]);
 
   const runAdminLogoDetection = useCallback(async () => {
     const selected = playlist.filter(p => p.checked);
@@ -1642,6 +2104,48 @@ export default function useAdmin({
     showHud
   ]);
 
+  const saveCoverTrainingExample = useCallback(async elementId => {
+    const video = videoRef?.current;
+    const element = (edits[currentId]?.elements || []).find(item => item.id === elementId);
+    if (!video || video.readyState < 2 || !element || !['rect', 'circle'].includes(element.type)) {
+      showHud('Обери прямокутник або коло на завантаженому відео');
+      return;
+    }
+    if (currentTime < Number(element.startTime || 0) || currentTime > Number(element.endTime || 0)) {
+      showHud('Перейди на час, коли це перекриття видно у відео');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    const sourceWidth = video.videoWidth;
+    const sourceHeight = video.videoHeight;
+    const scale = Math.min(1, 1280 / Math.max(sourceWidth, sourceHeight));
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) {
+      showHud('Не вдалося захопити кадр');
+      return;
+    }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const payload = {
+      image: canvas.toDataURL('image/jpeg', 0.9),
+      x: clamp(Number(element.x) / 100, 0, 1),
+      y: clamp(Number(element.y) / 100, 0, 1),
+      w: clamp(Number(element.w) / 100, 0.001, 1 - clamp(Number(element.x) / 100, 0, 1)),
+      h: clamp(Number(element.h) / 100, 0.001, 1 - clamp(Number(element.y) / 100, 0, 1)),
+      kind: 'cover_region',
+      sourceVideo: activeVideo?.name || activeVideo?.sourcePath || '',
+      timestamp: Number(video.currentTime ?? currentTime) || 0,
+      imageWidth: canvas.width,
+      imageHeight: canvas.height
+    };
+    const result = await fetchAdminJson('/ai/cover-example', {
+      method: 'POST', json: payload, silent: true, returnErrorPayload: true
+    });
+    if (result?.ok) showHud('Кадр і рамку додано в Drive: cover_region');
+    else showHud(`Не вдалося зберегти приклад: ${result?.detail || result?.error || 'перевір rclone'}`);
+  }, [activeVideo, currentId, currentTime, edits, fetchAdminJson, showHud, videoRef]);
+
   const stopAdminJob = useCallback(
     async id => {
       const targetId = id || adminJobId || adminJob?.id;
@@ -1659,6 +2163,24 @@ export default function useAdmin({
     },
     [adminJob?.id, adminJobId, fetchAdminJson, loadAdminJob, loadAdminJobs, showHud]
   );
+
+  const retryIncompleteAdminJob = useCallback(async id => {
+    const targetId = id || adminJobId || adminJob?.id;
+    if (!targetId) return;
+    const data = await fetchAdminJson(`/jobs/${targetId}/retry-incomplete`, {
+      method: 'POST', returnErrorPayload: true
+    });
+    if (!data?.ok) {
+      showHud(data?.error === 'no_incomplete_files'
+        ? 'Незавершених файлів немає'
+        : 'Не вдалося повторити незавершені файли');
+      return;
+    }
+    setAdminJobId(data.id);
+    loadAdminJobs();
+    loadAdminJob(data.id);
+    showHud(`Повторено незавершені файли: ${data.remaining}`);
+  }, [adminJob?.id, adminJobId, fetchAdminJson, loadAdminJob, loadAdminJobs, showHud]);
 
   const buildRenameCommand = useCallback(
     (video, mode) => {
@@ -1783,12 +2305,12 @@ export default function useAdmin({
       const existingItem = existingByFileKey.get(fileKey);
 
       if (existingItem) {
-        const merged = mergeChannelLists(existingItem.channels, channels);
-        const nextSuffix = resolveImportSuffix(existingItem.suffix, merged);
+        const merged = channels;
+        const nextSuffix = resolveImportSuffix('', merged);
         const nextHasSnow = existingItem.hasSnow || hasSnow;
         const nextLabels = mergeLabelTokens(existingItem.labels, labels);
         if (
-          (merged.length > 0 && merged.length !== (existingItem.channels || []).length) ||
+          JSON.stringify(merged) !== JSON.stringify(existingItem.channels || []) ||
           nextSuffix !== existingItem.suffix ||
           nextHasSnow !== existingItem.hasSnow ||
           nextLabels.length !== (existingItem.labels || []).length
@@ -1924,6 +2446,35 @@ export default function useAdmin({
     return () => window.clearTimeout(healthCheck);
   }, [adminOpen, loadAdminConfig, loadAdminJobs, pingAdmin]);
 
+  // Серверна версія: конфіг підтягується одразу, без відкриття адмінки.
+  useEffect(() => {
+    if (!IS_REMOTE_HOST) return;
+    loadAdminConfig();
+  }, [loadAdminConfig]);
+
+  // Серверна версія: файли з робочої теки підтягуються САМІ — при старті
+  // й щохвилини, без ручного «Підтягнути з теки». Політика імпорту та сама,
+  // що в пікера за замовчуванням: усі режими, будь-який сніг, не лише таблиця.
+  useEffect(() => {
+    if (!IS_REMOTE_HOST) return;
+    if (!adminConfig.baseDir) return;
+    const run = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const r = addVideosFromServer({ modes: [], snow: 'any', onlySheet: false });
+        if (r && typeof r.catch === 'function') r.catch(() => {});
+      } catch {
+        /* наступний цикл за хвилину повторить */
+      }
+    };
+    const first = window.setTimeout(run, 2000);
+    const iv = window.setInterval(run, 60000);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(iv);
+    };
+  }, [adminConfig.baseDir, addVideosFromServer]);
+
   useEffect(() => {
     if (!adminOpen) return;
     if (!adminConfig.aiRemoteUrl) return;
@@ -2048,9 +2599,13 @@ export default function useAdmin({
     adminAiLoading,
     adminAiStats,
     adminAiQueue,
+    adminAiSheetSuggestions,
     adminAiLastRequestAt,
     adminAiLastError,
+    adminAiDriveCheck,
     adminAiLastProvider,
+    adminAiColabMode,
+    setAdminAiColabMode,
     adminAiRemoteState,
     adminLogoLoading,
     adminLogoStats,
@@ -2072,15 +2627,22 @@ export default function useAdmin({
     loadAdminJobs,
     loadAdminJob,
     loadSheetMap,
+    confirmAiSheetSuggestion,
+    dismissAiSheetSuggestion,
     runAdminFfmpeg,
     runAdminClipchampExport,
     runAdminAiSegments,
+    runAdminAiSegmentsNgrok,
     runAdminAiSegmentsRemote,
+    checkAdminAiDrive,
     runAdminLogoDetection,
+    saveCoverTrainingExample,
     pingAdminAiRemote,
     stopAdminAi,
     retryAdminAiFailed,
+    refreshAdminAiBatch,
     stopAdminJob,
+    retryIncompleteAdminJob,
     pickAdminFolder,
     addVideosFromServer,
     queueServerRename

@@ -8,8 +8,10 @@ import fs from 'fs';
 import { spawn, execFile } from 'child_process';
 import path from 'path';
 import os from 'os';
+import https from 'https';
 import { fileURLToPath } from 'url';
 import {
+  buildAiChannelSheetValues,
   buildLinkFilenameMap,
   buildTelegramSheetSyncPlan,
   buildSheetRows,
@@ -17,6 +19,8 @@ import {
   resolveSheetFilenames
 } from './sheetRows.js';
 import { classifyGoogleCredentialError } from './googleCredentialError.js';
+import { parseRcloneProgressLine } from './rcloneProgress.js';
+import { buildClipchampRetryCommand } from './clipchampRetry.js';
 
 const PORT = process.env.PORT || 7071;
 const DB_PATH = process.env.DB_PATH || new URL('./metadata.sqlite', import.meta.url).pathname;
@@ -36,7 +40,7 @@ const DEFAULT_SHELL = process.env.JOB_SHELL || '/bin/bash';
 const DEFAULT_CLIPCHAMP_DRIVE_REMOTE =
   process.env.CLIPCHAMP_DRIVE_REMOTE || 'lqd-kotyk-helper';
 const DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID =
-  process.env.CLIPCHAMP_DRIVE_FOLDER_ID || '1_bNIOZBZfbHQU9oEC2e_5Xqu5lSC4D2H';
+  process.env.CLIPCHAMP_DRIVE_FOLDER_ID || '1p7uEPZ8WIWWvzbAmy9sV3-L4hWLj-ieb';
 const DEFAULT_CLIPCHAMP_FOLDER_PREFIX = process.env.CLIPCHAMP_FOLDER_PREFIX || 'Clipchamp';
 const AI_SCRIPT_PATH =
   process.env.AI_SCRIPT_PATH ||
@@ -73,6 +77,7 @@ app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '5mb' }));
 
 let db;
+const driveUploadProgress = new Map();
 let sheetsClient;
 const isLoopbackAddress = address =>
   ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
@@ -222,6 +227,7 @@ const getConfig = async () => {
       sheetName: DEFAULT_SHEET_NAME,
       sheetRange: DEFAULT_SHEET_RANGE,
       googleCredentialsConfigured,
+      aiDriveRemote: '',
       clipchampDriveRemote: DEFAULT_CLIPCHAMP_DRIVE_REMOTE,
       clipchampDriveFolderId: DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID,
       clipchampFolderPrefix: DEFAULT_CLIPCHAMP_FOLDER_PREFIX,
@@ -246,6 +252,7 @@ const getConfig = async () => {
       logoMaxMatches: typeof payload.logoMaxMatches === 'number' ? payload.logoMaxMatches : 5,
       logoMaxGap: typeof payload.logoMaxGap === 'number' ? payload.logoMaxGap : 0.5,
       logoScales: typeof payload.logoScales === 'string' ? payload.logoScales : '0.9,1.0,1.1',
+      aiDriveRemote: typeof payload.aiDriveRemote === 'string' ? payload.aiDriveRemote : '',
       clipchampDriveRemote:
         typeof payload.clipchampDriveRemote === 'string'
           ? payload.clipchampDriveRemote
@@ -289,6 +296,7 @@ const getConfig = async () => {
       logoMaxMatches: 5,
       logoMaxGap: 0.5,
       logoScales: '0.9,1.0,1.1',
+      aiDriveRemote: '',
       clipchampDriveRemote: DEFAULT_CLIPCHAMP_DRIVE_REMOTE,
       clipchampDriveFolderId: DEFAULT_CLIPCHAMP_DRIVE_FOLDER_ID,
       clipchampFolderPrefix: DEFAULT_CLIPCHAMP_FOLDER_PREFIX,
@@ -334,6 +342,7 @@ const saveConfig = async updates => {
     logoMaxGap:
       typeof updates.logoMaxGap === 'number' ? updates.logoMaxGap : current.logoMaxGap,
     logoScales: typeof updates.logoScales === 'string' ? updates.logoScales : current.logoScales,
+    aiDriveRemote: typeof updates.aiDriveRemote === 'string' ? updates.aiDriveRemote : current.aiDriveRemote,
     clipchampDriveRemote:
       typeof updates.clipchampDriveRemote === 'string'
         ? updates.clipchampDriveRemote
@@ -378,20 +387,47 @@ const saveAiRun = async payload => {
 
 const runCommand = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
-    const child = spawn(command, args, { shell: false, ...options });
+    const { onStderrLine, ...spawnOptions } = options;
+    const child = spawn(command, args, { shell: false, ...spawnOptions });
     let stdout = '';
     let stderr = '';
+    let stderrLineBuffer = '';
+    let settled = false;
     child.stdout?.on('data', chunk => {
       stdout += chunk.toString();
     });
     child.stderr?.on('data', chunk => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      if (onStderrLine) {
+        stderrLineBuffer += text;
+        const lines = stderrLineBuffer.split(/\r?\n/);
+        stderrLineBuffer = lines.pop() || '';
+        lines.forEach(line => onStderrLine(line));
+      }
     });
     child.on('close', code => {
+      if (settled) return;
+      settled = true;
+      if (stderrLineBuffer && onStderrLine) onStderrLine(stderrLineBuffer);
       if (code === 0) resolve({ stdout, stderr });
       else reject(new Error(stderr || `exit ${code}`));
     });
+    child.on('error', error => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
   });
+
+const requestAbortSignal = (req, res) => {
+  const controller = new AbortController();
+  req.once('aborted', () => controller.abort());
+  res.once('close', () => {
+    if (!res.writableEnded) controller.abort();
+  });
+  return controller.signal;
+};
 
 const saveJob = async job => {
   await db.run(
@@ -449,7 +485,8 @@ const runJob = async job => {
   try {
     child = spawn(shell, ['-lc', job.command], {
       cwd,
-      env: process.env
+      env: process.env,
+      detached: true
     });
   } catch (err) {
     const updatedAt = new Date().toISOString();
@@ -534,11 +571,13 @@ const stopJobById = async id => {
   const running = runningJobs.get(id);
   if (running) {
     running.canceled = true;
+    running.status = 'canceled';
     runningJobs.set(id, running);
     try {
-      running.child?.kill('SIGTERM');
+      if (running.pid) process.kill(-running.pid, 'SIGTERM');
+      else running.child?.kill('SIGTERM');
     } catch (e) {
-      console.error('Failed to stop job', e);
+      if (e?.code !== 'ESRCH') console.error('Failed to stop job', e);
     }
     return { ok: true, status: 'canceled', mode: 'running' };
   }
@@ -563,8 +602,47 @@ const stopJobById = async id => {
 };
 
 app.get('/health', (req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, app: 'video-cut-app' });
 });
+
+const proxyAiRemote = (req, res, remotePath) => {
+  if (!isLoopbackAddress(req.socket.remoteAddress || '')) {
+    return res.status(403).json({ ok: false, error: 'local_only' });
+  }
+  let target;
+  try {
+    const base = new URL(req.params.remote);
+    const host = base.hostname.toLowerCase();
+    if (base.protocol !== 'https:' || base.username || base.password || base.port ||
+        !(/(^|\.)trycloudflare\.com$|(^|\.)ngrok-free\.app$/.test(host))) {
+      return res.status(400).json({ ok: false, error: 'unsupported_ai_tunnel_url' });
+    }
+    target = new URL(remotePath, `${base.origin}/`);
+  } catch {
+    return res.status(400).json({ ok: false, error: 'invalid_ai_tunnel_url' });
+  }
+  const headers = { 'ngrok-skip-browser-warning': 'true' };
+  if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
+  if (req.headers['content-length']) headers['content-length'] = req.headers['content-length'];
+  const upstream = https.request(target, { method: req.method, headers, timeout: req.method === 'POST' ? 30 * 60 * 1000 : 15000 }, remote => {
+    res.status(remote.statusCode || 502);
+    res.setHeader('Content-Type', remote.headers['content-type'] || 'application/json');
+    remote.pipe(res);
+  });
+  upstream.on('timeout', () => upstream.destroy(new Error('ai_tunnel_timeout')));
+  upstream.on('error', error => {
+    if (!res.headersSent) res.status(502).json({ ok: false, error: 'ai_tunnel_unreachable', detail: error.message });
+    else res.destroy(error);
+  });
+  req.on('aborted', () => upstream.destroy());
+  if (req.method === 'POST') req.pipe(upstream);
+  else upstream.end();
+};
+
+app.get('/ai/remote-proxy/:remote/health', (req, res) => proxyAiRemote(req, res, '/health'));
+app.post('/ai/remote-proxy/:remote/predict', (req, res) => proxyAiRemote(req, res, '/predict'));
+app.get('/ai/remote-proxy/:remote/result/:taskId', (req, res) =>
+  proxyAiRemote(req, res, `/result/${encodeURIComponent(req.params.taskId)}`));
 
 app.post('/google-credentials', async (req, res) => {
   const remoteAddress = req.socket.remoteAddress || '';
@@ -781,13 +859,11 @@ app.post('/ai/segments', async (req, res) => {
       const meta = metaByPath.get(item.video) || {};
       const allowedModes = Array.isArray(meta.allowedModes) ? meta.allowedModes : [];
       let segments = item.segments || {};
-      if (allowedModes.length > 0) {
-        const filtered = {};
-        allowedModes.forEach(mode => {
-          if (segments[mode]) filtered[mode] = segments[mode];
-        });
-        segments = filtered;
-      }
+      const filtered = {};
+      allowedModes.forEach(mode => {
+        if (segments[mode]) filtered[mode] = segments[mode];
+      });
+      segments = filtered;
       return {
         ...item,
         segments,
@@ -934,6 +1010,298 @@ app.post('/ai/logo', async (req, res) => {
   }
 });
 
+const safeDriveBatchId = value => {
+  const id = String(value || '').trim();
+  return /^[a-zA-Z0-9_-]{8,96}$/.test(id) ? id : '';
+};
+
+const getColabBatchRemotePath = (remote, batchId) =>
+  `${String(remote || '').trim().replace(/:+$/, '')}:best2_training/colab_jobs/${batchId}`;
+
+app.post('/ai/drive-batch/start', async (req, res) => {
+  const batchId = safeDriveBatchId(req.body?.batchId);
+  if (!batchId) return res.status(400).json({ ok: false, error: 'invalid_batch_id' });
+  try {
+    const config = await getConfig();
+    const remote = String(config.aiDriveRemote || '').trim().replace(/:+$/, '');
+    if (!remote) return res.status(400).json({ ok: false, error: 'drive_remote_missing' });
+    const batchPath = getColabBatchRemotePath(remote, batchId);
+    const signal = requestAbortSignal(req, res);
+    await runCommand('rclone', ['mkdir', `${batchPath}/inputs`], { signal });
+    await runCommand('rclone', ['mkdir', `${batchPath}/jobs`], { signal });
+    res.json({ ok: true, batchId, drivePath: `best2_training/colab_jobs/${batchId}` });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: 'drive_batch_start_failed', detail: String(error.message || error) });
+  }
+});
+
+app.post('/ai/drive-batch/check', async (req, res) => {
+  const remote = String(req.body?.remote || '').trim().replace(/:+$/, '');
+  if (!remote) return res.status(400).json({ ok: false, error: 'drive_remote_missing' });
+  try {
+    const { stdout } = await runCommand('rclone', ['lsd', `${remote}:best2_training`]);
+    res.json({ ok: true, remote, drivePath: 'best2_training', folders: stdout.split('\n').filter(Boolean).length });
+  } catch (error) {
+    res.status(502).json({ ok: false, error: 'drive_check_failed', detail: String(error.message || error) });
+  }
+});
+
+app.post('/ai/drive-batch/:batchId/files', async (req, res) => {
+  const batchId = safeDriveBatchId(req.params.batchId);
+  const taskId = safeDriveBatchId(req.body?.taskId);
+  const requested = String(req.body?.sourcePath || '');
+  if (!batchId || !taskId || !requested) return res.status(400).json({ ok: false, error: 'invalid_job' });
+  try {
+    const config = await getConfig();
+    const baseDir = config.baseDir ? path.resolve(config.baseDir) : '';
+    if (!baseDir) return res.status(400).json({ ok: false, error: 'base_dir_missing' });
+    const sourcePath = path.resolve(baseDir, requested);
+    if (!sourcePath.startsWith(baseDir + path.sep)) return res.status(403).json({ ok: false, error: 'invalid_source_path' });
+    const sourceStat = await fs.promises.stat(sourcePath);
+    if (!sourceStat.isFile()) return res.status(404).json({ ok: false, error: 'source_not_found' });
+    const remote = String(config.aiDriveRemote || '').trim().replace(/:+$/, '');
+    if (!remote) return res.status(400).json({ ok: false, error: 'drive_remote_missing' });
+    const batchPath = getColabBatchRemotePath(remote, batchId);
+    const signal = requestAbortSignal(req, res);
+    const ext = VIDEO_EXTENSIONS.has(path.extname(sourcePath).toLowerCase()) ? path.extname(sourcePath).toLowerCase() : '.mp4';
+    const relativeInput = `inputs/${taskId}${ext}`;
+    const remoteVideoPath = `${batchPath}/${relativeInput}`;
+    const progressKey = `${batchId}:${taskId}`;
+    const progressState = {
+      batchId,
+      taskId,
+      fileName: path.basename(sourcePath),
+      phase: 'uploading',
+      bytesTransferred: 0,
+      totalBytes: sourceStat.size,
+      percent: 0,
+      speed: '',
+      eta: '',
+      updatedAt: new Date().toISOString()
+    };
+    driveUploadProgress.set(progressKey, progressState);
+    const job = {
+      task_id: taskId,
+      batch_id: batchId,
+      file_name: path.basename(sourcePath),
+      source_video: path.basename(sourcePath),
+      input_relpath: relativeInput,
+      allowed_modes: Array.isArray(req.body?.allowedModes)
+        ? req.body.allowedModes.filter(mode => ['digital', 'analog', 'thermal_digital', 'thermal_analog'].includes(mode))
+        : [],
+      status: 'accepted',
+      created_at: new Date().toISOString(),
+      fps: Math.max(0.1, Math.min(Number(req.body?.fps) || 1, 10)),
+      image_size: Math.max(160, Math.min(Number(req.body?.imageSize) || 320, 1280)),
+      min_duration: Math.max(0, Math.min(Number(req.body?.minDuration) || 2, 600)),
+      smooth_window: Math.max(1, Math.min(Number(req.body?.smoothWindow) || 3, 15))
+    };
+    try {
+      await runCommand('rclone', [
+        'copyto', sourcePath, remoteVideoPath,
+        '--stats=500ms', '--stats-one-line', '--stats-log-level=NOTICE'
+      ], {
+        signal,
+        onStderrLine: line => {
+          const stats = parseRcloneProgressLine(line);
+          if (!stats) return;
+          driveUploadProgress.set(progressKey, {
+            ...progressState,
+            ...stats,
+            phase: stats.percent >= 100 ? 'uploaded' : 'uploading',
+            updatedAt: new Date().toISOString()
+          });
+        }
+      });
+      driveUploadProgress.set(progressKey, {
+        ...progressState,
+        bytesTransferred: sourceStat.size,
+        percent: 100,
+        phase: 'uploaded',
+        updatedAt: new Date().toISOString()
+      });
+    } catch (uploadError) {
+      driveUploadProgress.set(progressKey, {
+        ...progressState,
+        phase: signal.aborted ? 'cancelled' : 'error',
+        error: String(uploadError.message || uploadError),
+        updatedAt: new Date().toISOString()
+      });
+      if (signal.aborted) {
+        runCommand('rclone', ['deletefile', remoteVideoPath]).catch(() => {});
+        return;
+      }
+      job.status = 'error';
+      job.error = `video_upload_failed: ${String(uploadError.message || uploadError)}`;
+    }
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'video-cut-drive-job-'));
+    try {
+      const jobFile = path.join(tempDir, `${taskId}.json`);
+      await fs.promises.writeFile(jobFile, JSON.stringify(job, null, 2), 'utf8');
+      await runCommand('rclone', ['copyto', jobFile, `${batchPath}/jobs/${taskId}.json`]);
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+    res.json({ ok: true, ...job, drivePath: `best2_training/colab_jobs/${batchId}` });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: 'drive_upload_failed', detail: String(error.message || error) });
+  }
+});
+
+app.get('/ai/drive-batch/:batchId/progress', (req, res) => {
+  const batchId = safeDriveBatchId(req.params.batchId);
+  if (!batchId) return res.status(400).json({ ok: false, error: 'invalid_batch_id' });
+  const now = Date.now();
+  for (const [key, value] of driveUploadProgress) {
+    if (now - Date.parse(value.updatedAt) > 60 * 60 * 1000) driveUploadProgress.delete(key);
+  }
+  const items = [...driveUploadProgress.values()].filter(item => item.batchId === batchId);
+  res.json({ ok: true, batchId, items });
+});
+
+app.get('/ai/drive-batch/:batchId', async (req, res) => {
+  const batchId = safeDriveBatchId(req.params.batchId);
+  if (!batchId) return res.status(400).json({ ok: false, error: 'invalid_batch_id' });
+  let tempDir = '';
+  try {
+    const config = await getConfig();
+    const remote = String(config.aiDriveRemote || '').trim().replace(/:+$/, '');
+    if (!remote) return res.status(400).json({ ok: false, error: 'drive_remote_missing' });
+    const batchPath = getColabBatchRemotePath(remote, batchId);
+    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'video-cut-drive-status-'));
+    await runCommand('rclone', ['copy', `${batchPath}/jobs`, tempDir]);
+    const jobDir = tempDir;
+    const jobFiles = await fs.promises.readdir(jobDir).catch(() => []);
+    const items = [];
+    for (const fileName of jobFiles.filter(name => name.endsWith('.json'))) {
+      try {
+        items.push(JSON.parse(await fs.promises.readFile(path.join(jobDir, fileName), 'utf8')));
+      } catch {
+        // Ignore an incomplete or malformed state file and report the others.
+      }
+    }
+    items.sort((left, right) => String(left.file_name).localeCompare(String(right.file_name)));
+    res.json({ ok: true, batchId, drivePath: `best2_training/colab_jobs/${batchId}`, items });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: 'drive_batch_read_failed', detail: String(error.message || error) });
+  } finally {
+    if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+app.post('/ai/drive-batch/:batchId/stop', async (req, res) => {
+  const batchId = safeDriveBatchId(req.params.batchId);
+  if (!batchId) return res.status(400).json({ ok: false, error: 'invalid_batch_id' });
+  let tempDir = '';
+  try {
+    const config = await getConfig();
+    const remote = String(config.aiDriveRemote || '').trim().replace(/:+$/, '');
+    if (!remote) return res.status(400).json({ ok: false, error: 'drive_remote_missing' });
+    const batchPath = getColabBatchRemotePath(remote, batchId);
+    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'video-cut-drive-stop-'));
+    await runCommand('rclone', ['copy', `${batchPath}/jobs`, tempDir]);
+    const jobFiles = await fs.promises.readdir(tempDir).catch(() => []);
+    let cancelled = 0;
+    let cancelRequested = 0;
+    const changedJobs = [];
+    for (const fileName of jobFiles.filter(name => name.endsWith('.json'))) {
+      const jobPath = path.join(tempDir, fileName);
+      let job;
+      try {
+        job = JSON.parse(await fs.promises.readFile(jobPath, 'utf8'));
+      } catch {
+        continue;
+      }
+      if (['done', 'error', 'cancelled'].includes(job.status)) continue;
+      if (job.status === 'processing') {
+        job.cancel_requested = true;
+        cancelRequested += 1;
+      } else {
+        job.status = 'cancelled';
+        job.cancelled_at = new Date().toISOString();
+        cancelled += 1;
+      }
+      await fs.promises.writeFile(jobPath, JSON.stringify(job, null, 2), 'utf8');
+      await runCommand('rclone', ['copyto', jobPath, `${batchPath}/jobs/${fileName}`]);
+      changedJobs.push(job);
+    }
+    if (changedJobs.length) {
+      const manifestPath = path.join(tempDir, 'result_manifest.json');
+      let manifest = { batch_id: batchId, items: [] };
+      try {
+        await runCommand('rclone', ['copyto', `${batchPath}/result_manifest.json`, manifestPath]);
+        manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'));
+      } catch {
+        // A batch without a manifest is valid until its first worker update.
+      }
+      const byTask = new Map((manifest.items || []).map(item => [item.task_id, item]));
+      changedJobs.forEach(job => byTask.set(job.task_id, job));
+      await fs.promises.writeFile(manifestPath, JSON.stringify({
+        ...manifest,
+        batch_id: batchId,
+        updated_at: Date.now() / 1000,
+        items: [...byTask.values()]
+      }, null, 2), 'utf8');
+      await runCommand('rclone', ['copyto', manifestPath, `${batchPath}/result_manifest.json`]);
+    }
+    res.json({ ok: true, batchId, cancelled, cancelRequested });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: 'drive_batch_stop_failed', detail: String(error.message || error) });
+  } finally {
+    if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+app.post('/ai/cover-example', async (req, res) => {
+  const payload = req.body || {};
+  const dataUrl = String(payload.image || '');
+  const match = dataUrl.match(/^data:image\/(jpeg|jpg|png);base64,([\s\S]+)$/);
+  if (!match) return res.status(400).json({ ok: false, error: 'invalid_image' });
+  const box = ['x', 'y', 'w', 'h'].map(key => Number(payload[key]));
+  const [x, y, width, height] = box;
+  if (box.some(value => !Number.isFinite(value)) || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1 || y + height > 1) {
+    return res.status(400).json({ ok: false, error: 'invalid_box' });
+  }
+  let tempDir = '';
+  try {
+    const config = await getConfig();
+    const remote = String(config.aiDriveRemote || '').trim().replace(/:+$/, '');
+    if (!remote) return res.status(400).json({ ok: false, error: 'drive_remote_missing' });
+    const sampleId = `cover_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+    const root = `${remote}:best2_training/cover_region_dataset/inbox`;
+    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'video-cut-cover-sample-'));
+    await runCommand('rclone', ['mkdir', `${root}/images`]);
+    await runCommand('rclone', ['mkdir', `${root}/labels`]);
+    await runCommand('rclone', ['mkdir', `${root}/metadata`]);
+    const imagePath = path.join(tempDir, `${sampleId}.jpg`);
+    const labelPath = path.join(tempDir, `${sampleId}.txt`);
+    const metadataPath = path.join(tempDir, `${sampleId}.json`);
+    await fs.promises.writeFile(imagePath, Buffer.from(match[2], 'base64'));
+    await fs.promises.writeFile(labelPath, `0 ${(x + width / 2).toFixed(8)} ${(y + height / 2).toFixed(8)} ${width.toFixed(8)} ${height.toFixed(8)}\n`);
+    const metadata = {
+      id: sampleId,
+      class: 'cover_region',
+      kind: String(payload.kind || 'cover_region'),
+      source_video: String(payload.sourceVideo || ''),
+      timestamp: Number(payload.timestamp) || 0,
+      box: { x, y, w: width, h: height },
+      reviewed: true,
+      image_width: Number(payload.imageWidth) || null,
+      image_height: Number(payload.imageHeight) || null,
+      created_at: new Date().toISOString()
+    };
+    await fs.promises.writeFile(metadataPath, JSON.stringify(metadata, null, 2));
+    await runCommand('rclone', ['copyto', imagePath, `${root}/images/${sampleId}.jpg`]);
+    await runCommand('rclone', ['copyto', labelPath, `${root}/labels/${sampleId}.txt`]);
+    await runCommand('rclone', ['copyto', metadataPath, `${root}/metadata/${sampleId}.json`]);
+    res.json({ ok: true, sampleId, drivePath: 'best2_training/cover_region_dataset/inbox' });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: 'cover_example_upload_failed', detail: String(error.message || error) });
+  } finally {
+    if (tempDir) await fs.promises.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 app.get('/file', async (req, res) => {
   try {
     const requested = String(req.query.path || '');
@@ -988,6 +1356,83 @@ app.get('/sheet-map', async (req, res) => {
   } catch (e) {
     console.error('Sheet read failed', e?.response?.data?.error || e?.message || e);
     res.status(500).json({ ok: false, error: 'sheet_read_failed' });
+  }
+});
+
+const AI_SHEET_ADDITIONS_ENABLED = false;
+app.post('/sheet/append-ai-channel-row', async (req, res) => {
+  if (!AI_SHEET_ADDITIONS_ENABLED) {
+    return res.status(410).json({ ok: false, error: 'ai_sheet_additions_disabled' });
+  }
+  if (!isLoopbackAddress(req.socket.remoteAddress || '')) {
+    return res.status(403).json({ ok: false, error: 'local_only' });
+  }
+  if (!sheetsClient) {
+    return res.status(400).json({ ok: false, error: 'sheet_write_not_configured' });
+  }
+  try {
+    const row = req.body?.row || {};
+    const fileName = String(row.fileName || '').trim();
+    const mode = String(row.mode || '').trim();
+    const modeLabels = {
+      digital: 'Digital',
+      analog: 'Analog',
+      thermal_digital: 'Digital',
+      thermal_analog: 'Analog'
+    };
+    if (!fileName || !modeLabels[mode]) {
+      return res.status(400).json({ ok: false, error: 'invalid_ai_channel_row' });
+    }
+
+    const config = await getConfig();
+    const spreadsheetId = config.sheetId || DEFAULT_SHEET_ID;
+    const metadata = await sheetsClient.spreadsheets.get({
+      spreadsheetId,
+      fields: 'sheets.properties(sheetId,title)'
+    });
+    const gid = Number.parseInt(String(config.sheetGid || DEFAULT_SHEET_GID), 10);
+    const title = metadata.data.sheets?.find(sheet => sheet.properties?.sheetId === gid)
+      ?.properties?.title || config.sheetName || DEFAULT_SHEET_NAME;
+    const quotedTitle = `'${String(title).replaceAll("'", "''")}'`;
+    const current = await sheetsClient.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${quotedTitle}!A:K`
+    });
+    const sheetRows = buildSheetRows(current.data.values || []);
+    const normalize = value => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const resolveMode = item => {
+      const camera = normalize(item.cameraType);
+      const kind = normalize(item.analogDigital);
+      const thermal = camera.includes('thermal') || camera.includes('infrared') || kind.includes('thermal');
+      const analog = kind.includes('analog');
+      if (thermal) return analog ? 'thermal_analog' : 'thermal_digital';
+      return analog ? 'analog' : kind.includes('digital') ? 'digital' : '';
+    };
+    const duplicate = sheetRows.find(item =>
+      normalize(item.fileName) === normalize(fileName) && resolveMode(item) === mode
+    );
+    if (duplicate) {
+      return res.json({ ok: true, duplicate: true, rowIndex: duplicate.rowIndex });
+    }
+
+    const values = [buildAiChannelSheetValues(current.data.values?.[0], {
+      ...row,
+      fileName,
+      cameraType: row.cameraType || (mode.startsWith('thermal_') ? 'Thermal' : 'Optical')
+    }, modeLabels[mode])];
+    const appended = await sheetsClient.spreadsheets.values.append({
+      spreadsheetId,
+      range: `${quotedTitle}!A:K`,
+      valueInputOption: 'RAW',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values }
+    });
+    const updatedRange = appended.data.updates?.updatedRange || '';
+    const rowIndex = Number(updatedRange.match(/[A-Z]+(\d+)/i)?.[1]) || null;
+    res.json({ ok: true, duplicate: false, rowIndex });
+  } catch (error) {
+    console.error('AI channel row append failed', error?.response?.data?.error || error?.message || error);
+    res.status(500).json({ ok: false, error: 'sheet_ai_row_append_failed' });
   }
 });
 
@@ -1171,6 +1616,34 @@ app.post('/jobs/:id/stop', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (e) {
     res.status(500).json({ ok: false, error: 'job_stop_failed' });
+  }
+});
+
+app.post('/jobs/:id/retry-incomplete', async (req, res) => {
+  try {
+    const original = await db.get(
+      'SELECT id, status, command, log FROM jobs WHERE id = ?',
+      [req.params.id]
+    );
+    if (!original) return res.status(404).json({ ok: false, error: 'job_not_found' });
+    if (!['canceled', 'error'].includes(original.status)) {
+      return res.status(409).json({ ok: false, error: 'job_not_finished' });
+    }
+    const config = await getConfig();
+    const retry = buildClipchampRetryCommand(original.command, original.log, config.baseDir || process.cwd());
+    if (!retry) return res.status(409).json({ ok: false, error: 'no_incomplete_files' });
+    const createdAt = new Date().toISOString();
+    const job = {
+      id: Date.now().toString(), status: 'queued', command: retry.command, log: '',
+      exitCode: null, createdAt, updatedAt: createdAt
+    };
+    await saveJob(job);
+    jobQueue.push(job);
+    processJobQueue().catch(error => console.error('Job retry failed', error));
+    res.json({ ok: true, id: job.id, remaining: retry.remaining });
+  } catch (error) {
+    console.error('Incomplete job retry failed', error);
+    res.status(500).json({ ok: false, error: 'job_retry_failed' });
   }
 });
 

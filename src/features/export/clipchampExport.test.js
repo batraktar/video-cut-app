@@ -27,7 +27,7 @@ describe('Clipchamp Drive export', () => {
     ).toBe('link,filename\nhttps://t.me/example/1,video_crop_analog.mp4\n');
   });
 
-  it('builds one upload command rooted at the provided Drive folder', () => {
+  it('uploads rendered videos directly into the provided Drive folder', () => {
     const command = buildClipchampExportCommand({
       localDir: '.clipchamp_exports/session',
       remoteName: 'lqd-kotyk-helper',
@@ -41,8 +41,13 @@ describe('Clipchamp Drive export', () => {
     expect(command).toContain('ffmpeg test');
     expect(command).toContain('links_map.csv');
     expect(command).toContain('export_manifest.json');
-    expect(command).toContain("'lqd-kotyk-helper:Clipchamp_2026-06-29_16-07-09'");
+    expect(command).toContain("rclone copyto '.clipchamp_exports/session/video.mp4' 'lqd-kotyk-helper:video.mp4'");
+    expect(command).toContain('CLIPCHAMP_UPLOAD_START');
+    expect(command).toContain('CLIPCHAMP_UPLOAD_DONE');
+    expect(command).not.toContain("'lqd-kotyk-helper:Clipchamp_2026-06-29_16-07-09'");
     expect(command).toContain("--drive-root-folder-id 'folder-id'");
+    expect(command).toContain("rclone copyto '.clipchamp_exports/session/video.mp4'");
+    expect(command).not.toContain("rclone copy '.clipchamp_exports/session'");
   });
 
   it('builds a local-only export without requiring or invoking rclone', () => {

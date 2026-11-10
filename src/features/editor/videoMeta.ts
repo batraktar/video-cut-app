@@ -2,6 +2,10 @@ import { normalizeName, resolveSegmentModeFromMeta, resolveSegmentModeFromSuffix
 
 export type VideoChannelLike = {
   mode?: string;
+  suffix?: string;
+  sheetMode?: string;
+  sheetCameraType?: string;
+  sheetRow?: number | null;
 };
 
 export type VideoLike = {
@@ -69,12 +73,14 @@ export const getSegmentModeForVideo = (video: VideoLike): string => {
 
 export const getExpectedModesForAi = (video: VideoLike): string[] => {
   if (!video) return [];
-  if (video.channelMode) return [video.channelMode];
+  if (video.channelMode) return video.channels?.some(channel => channel.sheetRow && channel.mode === video.channelMode)
+    ? [video.channelMode] : [];
   if (Array.isArray(video.channels) && video.channels.length > 0) {
-    return video.channels.map(channel => channel.mode).filter(Boolean) as string[];
+    const sheetModes = video.channels
+      .filter(channel => channel.sheetRow)
+      .map(channel => channel.mode)
+      .filter(Boolean) as string[];
+    return [...new Set(sheetModes)];
   }
-  const metaMode = resolveSegmentModeFromMeta(video.sheetMode, video.sheetCameraType);
-  const suffixMode = resolveSegmentModeFromSuffix(video.suffix);
-  const hint = metaMode || suffixMode;
-  return hint ? [hint] : [];
+  return [];
 };

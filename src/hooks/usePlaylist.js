@@ -235,6 +235,7 @@ export default function usePlaylist({
       sheetMode: v.sheetMode || '',
       sheetCameraType: v.sheetCameraType || '',
       sheetStatus: v.sheetStatus || '',
+      checked: !!v.checked,
       notRelevant: !!v.notRelevant,
       hasSnow: !!v.hasSnow,
       labels: Array.isArray(v.labels) ? v.labels : [],

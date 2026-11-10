@@ -1,3 +1,5 @@
+import { getClipchampJobStatus, getJobStatusLabel } from '../features/export/clipchampJobStatus';
+
 export default function AdminHistoryModal({
   open,
   isDark,
@@ -40,6 +42,7 @@ export default function AdminHistoryModal({
               {adminJobs.map(job => {
                 const meta = getJobMeta(job);
                 const progress = getJobProgress(job);
+                const exportStatus = getClipchampJobStatus(job);
                 const isStoppable = job.status === 'running' || job.status === 'queued';
                 return (
                   <tr
@@ -53,10 +56,10 @@ export default function AdminHistoryModal({
                     <td className="px-2 py-1" title={meta.tooltip || undefined}>
                       {meta.label}
                     </td>
-                    <td className="px-2 py-1 text-slate-400">{job.status}</td>
+                    <td className="px-2 py-1 text-slate-400">{getJobStatusLabel(job.status)}</td>
                     <td className="px-2 py-1">
                       {progress === null ? (
-                        <span className="text-slate-400">—</span>
+                        <span className="text-slate-400">Ще не надійшов</span>
                       ) : (
                         <div className="flex items-center gap-2">
                           <div className="h-1.5 flex-1 bg-slate-200/40 rounded-full overflow-hidden">
@@ -65,7 +68,11 @@ export default function AdminHistoryModal({
                               style={{ width: `${progress}%` }}
                             />
                           </div>
-                          <span className="text-slate-400">{Math.round(progress)}%</span>
+                          <span className="whitespace-nowrap text-slate-400">
+                            {exportStatus?.totalCount
+                              ? `${exportStatus.uploadedCount}/${exportStatus.totalCount} файлів · ${Math.round(progress)}%`
+                              : `${Math.round(progress)}%`}
+                          </span>
                         </div>
                       )}
                     </td>

@@ -1,3 +1,6 @@
+export const isExpectedServiceResponse = (statusCode, body, marker) =>
+  statusCode >= 200 && statusCode < 500 && String(body).includes(marker);
+
 export const getStartupPlan = ({ appAlreadyRunning, apiAlreadyRunning }) => {
   const missingServices = [
     ...(!appAlreadyRunning ? ['web'] : []),

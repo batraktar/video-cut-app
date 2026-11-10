@@ -26,6 +26,7 @@ export default function AppOverlays({
   onCopyFfmpegBatchScript,
   onCloseFfmpegBatchModal,
   adminOpen,
+  adminInitialTab,
   adminHistoryOpen,
   adminError,
   adminHealth,
@@ -39,6 +40,7 @@ export default function AppOverlays({
   adminAiQueue,
   adminAiLastRequestAt,
   adminAiLastError,
+  adminAiColabMode,
   adminAiRemoteState,
   adminJobProgress,
   adminJob,
@@ -50,7 +52,6 @@ export default function AppOverlays({
   adminLogoLoading,
   adminLogoStats,
   adminSyncState,
-  importPickerRequest,
   autoSyncAllowed,
   selectedCount,
   activeVideo,
@@ -66,8 +67,10 @@ export default function AppOverlays({
   onSaveGoogleCredentials,
   onAddVideos,
   onRunAiSegments,
+  onRunAiSegmentsNgrok,
   onRunClipchampExport,
   onRunAiSegmentsRemote,
+  onColabModeChange,
   onPingAiRemote,
   onStopAi,
   onRetryAiFailed,
@@ -83,7 +86,8 @@ export default function AppOverlays({
   onRunLogo,
   onCloseHistory,
   getJobProgress,
-  onStopJob
+  onStopJob,
+  onRetryIncompleteJob
 }) {
   return (
     <>
@@ -124,7 +128,9 @@ export default function AppOverlays({
         onClose={onCloseFfmpegBatchModal}
       />
       <AdminModal
+        key={`${adminInitialTab}-${adminOpen ? 'open' : 'closed'}`}
         open={adminOpen}
+        initialTab={adminInitialTab}
         isDark={isDark}
         adminError={adminError}
         adminHealth={adminHealth}
@@ -138,6 +144,7 @@ export default function AppOverlays({
         adminAiQueue={adminAiQueue}
         adminAiLastRequestAt={adminAiLastRequestAt}
         adminAiLastError={adminAiLastError}
+        adminAiColabMode={adminAiColabMode}
         adminAiRemoteState={adminAiRemoteState}
         adminJobProgress={adminJobProgress}
         adminJob={adminJob}
@@ -149,7 +156,6 @@ export default function AppOverlays({
         adminLogoLoading={adminLogoLoading}
         adminLogoStats={adminLogoStats}
         adminSyncState={adminSyncState}
-        importPickerRequest={importPickerRequest}
         autoSyncAllowed={autoSyncAllowed}
         selectedCount={selectedCount}
         activeVideo={activeVideo}
@@ -165,8 +171,11 @@ export default function AppOverlays({
         onSaveGoogleCredentials={onSaveGoogleCredentials}
         onAddVideos={onAddVideos}
         onRunAiSegments={onRunAiSegments}
+        onRunAiSegmentsNgrok={onRunAiSegmentsNgrok}
         onRunClipchampExport={onRunClipchampExport}
+        onRetryIncompleteJob={onRetryIncompleteJob}
         onRunAiSegmentsRemote={onRunAiSegmentsRemote}
+        onColabModeChange={onColabModeChange}
         onPingAiRemote={onPingAiRemote}
         onStopAi={onStopAi}
         onRetryAiFailed={onRetryAiFailed}

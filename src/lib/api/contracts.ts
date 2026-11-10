@@ -13,6 +13,7 @@ export type AdminConfig = {
   logoMaxMatches: number;
   logoMaxGap: number;
   logoScales: string;
+  aiDriveRemote: string;
   clipchampDriveRemote: string;
   clipchampDriveFolderId: string;
   clipchampFolderPrefix: string;

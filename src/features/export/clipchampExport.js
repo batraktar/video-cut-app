@@ -59,7 +59,7 @@ export const buildClipchampExportCommand = ({
   manifest
 }) => {
   const cleanRemote = String(remoteName || '').trim().replace(/:+$/, '');
-  const remoteTarget = `${cleanRemote}:${folderName}`;
+  const remoteTarget = `${cleanRemote}:`;
   const linksCsv = buildLinksMapCsv(linksRows);
   const videosMarkdown = buildVideosMarkdown(linksRows, folderName);
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
@@ -69,25 +69,48 @@ export const buildClipchampExportCommand = ({
   const logPath = `${localDir}/upload.log`;
   const rcloneRoot = ['--drive-root-folder-id', shellQuote(rootFolderId)].join(' ');
   const parentUrl = `https://drive.google.com/drive/folders/${rootFolderId}`;
+  const uploadLines = (Array.isArray(manifest?.files) ? manifest.files : [])
+    .filter(file => String(file?.filename || '').trim())
+    .flatMap(file => {
+      const filename = String(file.filename).trim();
+      const sourcePath = `${localDir}/${filename}`;
+      const destinationPath = `${remoteTarget}${filename}`;
+      return [
+        `printf 'CLIPCHAMP_UPLOAD_START %s\\n' ${shellQuote(filename)}`,
+        `if rclone copyto ${shellQuote(sourcePath)} ${shellQuote(destinationPath)} ${rcloneRoot} --stats 1s --stats-one-line --stats-log-level NOTICE --progress 2>&1 | tee -a ${shellQuote(logPath)}; then`,
+        `  printf 'CLIPCHAMP_UPLOAD_DONE %s\\n' ${shellQuote(filename)}`,
+        'else',
+        `  printf 'CLIPCHAMP_UPLOAD_FAILED %s\\n' ${shellQuote(filename)}`,
+        '  CLIPCHAMP_EXPORT_FAILED=1',
+        'fi'
+      ];
+    });
 
   return [
     `# CLIPCHAMP_EXPORT ${folderName}`,
     'set -o pipefail',
     `mkdir -p ${shellQuote(localDir)}`,
     `mkdir -p ${shellQuote(`${localDir}/_tmp`)}`,
-    ...(uploadToDrive ? [`rclone mkdir ${shellQuote(remoteTarget)} ${rcloneRoot}`] : []),
+    'CLIPCHAMP_EXPORT_FAILED=0',
     ...(processingLines || []),
     `printf %s ${shellQuote(linksCsv)} > ${shellQuote(linksPath)}`,
     `printf %s ${shellQuote(videosMarkdown)} > ${shellQuote(markdownPath)}`,
     `printf %s ${shellQuote(manifestJson)} > ${shellQuote(manifestPath)}`,
     ...(uploadToDrive
       ? [
-          `rclone copy ${shellQuote(localDir)} ${shellQuote(remoteTarget)} ${rcloneRoot} --exclude ${shellQuote('_tmp/**')} --exclude ${shellQuote('upload.log')} --progress 2>&1 | tee ${shellQuote(logPath)}`,
-          `printf '\\nDrive parent: %s\\nFolder: %s\\n' ${shellQuote(parentUrl)} ${shellQuote(folderName)} | tee -a ${shellQuote(logPath)}`,
-          `rclone copyto ${shellQuote(logPath)} ${shellQuote(`${remoteTarget}/upload.log`)} ${rcloneRoot}`,
-          `printf 'CLIPCHAMP_EXPORT_DONE\\n%s\\n%s\\n' ${shellQuote(parentUrl)} ${shellQuote(folderName)}`
+          ...uploadLines,
+          'if [ "$CLIPCHAMP_EXPORT_FAILED" -ne 0 ]; then',
+          "  printf 'CLIPCHAMP_EXPORT_FAILED\\n'",
+          '  exit 1',
+          'fi',
+          `printf '\\nDrive folder: %s\\n' ${shellQuote(parentUrl)} | tee -a ${shellQuote(logPath)}`,
+          `printf 'CLIPCHAMP_EXPORT_DONE\\n%s\\n' ${shellQuote(parentUrl)}`
         ]
       : [
+          'if [ "$CLIPCHAMP_EXPORT_FAILED" -ne 0 ]; then',
+          "  printf 'CLIPCHAMP_EXPORT_FAILED\\n'",
+          '  exit 1',
+          'fi',
           `printf 'CLIPCHAMP_EXPORT_DONE\\nLocal folder: %s\\n' ${shellQuote(localDir)}`
         ])
   ].join('\n');

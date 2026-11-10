@@ -1,33 +1,42 @@
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import process from 'node:process';
-import { getNpmInvocation, getStartupPlan } from './startupPlan.js';
+import { getNpmInvocation, getStartupPlan, isExpectedServiceResponse } from './startupPlan.js';
 
 const APP_URL = 'http://localhost:5173';
 const API_URL = 'http://localhost:7071/health';
+const APP_MARKER = '<title>video-cut-app</title>';
+const API_MARKER = '"app":"video-cut-app"';
 
-const isUrlReady = url =>
+const checkUrl = (url, marker) =>
   new Promise(resolve => {
     const request = http.get(url, response => {
-      response.resume();
-      resolve((response.statusCode ?? 500) < 500);
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { body += chunk; });
+      response.on('end', () => resolve({ occupied: true,
+        ready: isExpectedServiceResponse(response.statusCode ?? 500, body, marker) }));
     });
     request.setTimeout(1_000, () => request.destroy());
-    request.on('error', () => resolve(false));
+    request.on('error', () => resolve({ occupied: false, ready: false }));
   });
 
-const waitForUrl = (url, timeoutMs) =>
+const waitForUrl = (url, marker, timeoutMs) =>
   new Promise((resolve, reject) => {
     const startedAt = Date.now();
 
     const check = () => {
       const request = http.get(url, response => {
-        response.resume();
-        if ((response.statusCode ?? 500) < 500) {
-          resolve();
-          return;
-        }
-        retry();
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', chunk => { body += chunk; });
+        response.on('end', () => {
+          if (isExpectedServiceResponse(response.statusCode ?? 500, body, marker)) {
+            resolve();
+            return;
+          }
+          retry();
+        });
       });
       request.setTimeout(1_000, () => request.destroy());
       request.on('error', retry);
@@ -55,10 +64,20 @@ const openBrowser = url => {
   opener.unref();
 };
 
-const [appAlreadyRunning, apiAlreadyRunning] = await Promise.all([
-  isUrlReady(APP_URL),
-  isUrlReady(API_URL)
+const [appStatus, apiStatus] = await Promise.all([
+  checkUrl(APP_URL, APP_MARKER),
+  checkUrl(API_URL, API_MARKER)
 ]);
+if (appStatus.occupied && !appStatus.ready) {
+  console.error('Порт 5173 зайнятий іншим застосунком. Зупини його перед запуском Video Cut App.');
+  process.exit(1);
+}
+if (apiStatus.occupied && !apiStatus.ready) {
+  console.error('Порт 7071 зайнятий іншим або застарілим сервером. Зупини його перед запуском Video Cut App.');
+  process.exit(1);
+}
+const appAlreadyRunning = appStatus.ready;
+const apiAlreadyRunning = apiStatus.ready;
 
 if (appAlreadyRunning && apiAlreadyRunning) {
   console.log(`Редактор уже запущений: ${APP_URL}`);
@@ -99,8 +118,8 @@ process.on('SIGTERM', () => stop('SIGTERM'));
 try {
   await Promise.race([
     Promise.all([
-      ...(!appAlreadyRunning ? [waitForUrl(APP_URL, 30_000)] : []),
-      ...(!apiAlreadyRunning ? [waitForUrl(API_URL, 30_000)] : [])
+      ...(!appAlreadyRunning ? [waitForUrl(APP_URL, APP_MARKER, 30_000)] : []),
+      ...(!apiAlreadyRunning ? [waitForUrl(API_URL, API_MARKER, 30_000)] : [])
     ]),
     childExit.then(code => {
       throw new Error(`Процес завершився з кодом ${code}`);

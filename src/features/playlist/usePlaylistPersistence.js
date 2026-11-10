@@ -228,7 +228,7 @@ export default function usePlaylistPersistence({
           ...item,
           url: null,
           file: null,
-          checked: false,
+          checked: Boolean(item.checked),
           isLoading: false,
           suffix: item.suffix || '',
           sheetRow: item.sheetRow || null,

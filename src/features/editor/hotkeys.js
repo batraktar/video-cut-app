@@ -19,6 +19,7 @@ export const DEFAULT_HOTKEYS = {
   togglePlayback: [{ code: 'Space', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   addRect: [{ code: 'KeyN', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   addCircle: [{ code: 'KeyO', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
+  saveCoverTrainingExample: [{ code: 'KeyG', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   toggleElementChannel: [{ code: 'KeyL', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   addSegment: [{ code: 'Enter', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
   splitSegment: [{ code: 'KeyX', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }],
@@ -69,6 +70,7 @@ export const HOTKEY_DEFS = [
   { id: 'cycleSegmentMode', label: 'Перемкнути канал сегментів' },
   { id: 'addRect', label: 'Додати прямокутник' },
   { id: 'addCircle', label: 'Додати коло' },
+  { id: 'saveCoverTrainingExample', label: 'Зберегти кадр перекриття в датасет' },
   { id: 'toggleElementChannel', label: 'Канал елемента: all/active' },
   { id: 'outline', label: 'Контур (елемент)' },
   { id: 'fill', label: 'Заливка (елемент)' },
@@ -203,6 +205,18 @@ export const eventMatchesAction = (event, hotkeys, actionId) => {
   const list = hotkeys?.[actionId];
   if (!Array.isArray(list) || list.length === 0) return false;
   return list.some(hotkey => eventMatchesHotkey(event, hotkey));
+};
+
+export const shouldIgnoreRepeatedHotkey = (event, hotkeys) => {
+  if (!event?.repeat) return false;
+  if (
+    eventMatchesAction(event, hotkeys, 'seekBackSmall') ||
+    eventMatchesAction(event, hotkeys, 'seekForwardSmall')
+  ) return false;
+
+  const panHold = eventMatchesAction(event, hotkeys, 'panHold');
+  const sharedPlayPanBinding = panHold && eventMatchesAction(event, hotkeys, 'togglePlayback');
+  return !panHold || sharedPlayPanBinding;
 };
 
 const isOverlapAllowed = (actionA, actionB, binding) => {

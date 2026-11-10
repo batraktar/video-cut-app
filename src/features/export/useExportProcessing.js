@@ -501,17 +501,22 @@ export default function useExportProcessing({
             ctx.fillStyle = el.color;
             ctx.strokeStyle = el.color;
             ctx.lineWidth = el.isOutline ? 1 : Math.max(1, (el.thickness / 100) * meta.width * 0.5);
+            const centerX = canvasX + elRealW / 2;
+            const centerY = canvasY + elRealH / 2;
+            const rotation = ((Number(el.rotation) || 0) * Math.PI) / 180;
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            ctx.rotate(rotation);
             if (el.type === 'circle') {
-              const cx = canvasX + elRealW / 2;
-              const cy = canvasY + elRealH / 2;
               ctx.beginPath();
-              ctx.ellipse(cx, cy, elRealW / 2, elRealH / 2, 0, 0, Math.PI * 2);
+              ctx.ellipse(0, 0, elRealW / 2, elRealH / 2, 0, 0, Math.PI * 2);
               if (el.isOutline) ctx.stroke();
               else ctx.fill();
             } else {
-              if (el.isOutline) ctx.strokeRect(canvasX, canvasY, elRealW, elRealH);
-              else ctx.fillRect(canvasX, canvasY, elRealW, elRealH);
+              if (el.isOutline) ctx.strokeRect(-elRealW / 2, -elRealH / 2, elRealW, elRealH);
+              else ctx.fillRect(-elRealW / 2, -elRealH / 2, elRealW, elRealH);
             }
+            ctx.restore();
           });
         }
 

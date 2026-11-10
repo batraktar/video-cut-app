@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { SEGMENT_MODES } from '../../lib/editorConstants';
 import { normalizeName } from '../../lib/editorUtils';
 import { getSegmentModeForVideo } from './videoMeta';
-import { eventMatchesAction } from './hotkeys';
+import { eventMatchesAction, shouldIgnoreRepeatedHotkey } from './hotkeys';
 
 const isEditableTarget = target => {
   if (!(target instanceof HTMLElement)) return false;
@@ -53,6 +53,8 @@ export default function useEditorHotkeys(params) {
         updateElement,
         setSegmentDraft,
         toggleSegmentSnowAtTime,
+        toggleSegmentSnowForId,
+        saveCoverTrainingExample,
         togglePlayback,
         copyAttributes,
         pasteAttributes,
@@ -87,13 +89,7 @@ export default function useEditorHotkeys(params) {
         return;
       }
 
-      const isSharedPlayPanBinding =
-        eventMatchesAction(e, hotkeys, 'panHold') &&
-        eventMatchesAction(e, hotkeys, 'togglePlayback');
-      if (
-        e.repeat &&
-        (!eventMatchesAction(e, hotkeys, 'panHold') || isSharedPlayPanBinding)
-      ) return;
+      if (shouldIgnoreRepeatedHotkey(e, hotkeys)) return;
 
       if (eventMatchesAction(e, hotkeys, 'undo')) {
         e.preventDefault();
@@ -132,6 +128,9 @@ export default function useEditorHotkeys(params) {
         return;
       }
 
+      const isSharedPlayPanBinding =
+        eventMatchesAction(e, hotkeys, 'panHold') &&
+        eventMatchesAction(e, hotkeys, 'togglePlayback');
       if (
         eventMatchesAction(e, hotkeys, 'panHold') &&
         !isSharedPlayPanBinding &&
@@ -157,6 +156,16 @@ export default function useEditorHotkeys(params) {
         e.preventDefault();
         addCircle();
         showHud("Додано коло");
+        return;
+      }
+
+      if (eventMatchesAction(e, hotkeys, 'saveCoverTrainingExample')) {
+        e.preventDefault();
+        if (!currentEdit.selectedId) {
+          showHud('Спочатку оберіть рамку перекриття');
+          return;
+        }
+        saveCoverTrainingExample?.(currentEdit.selectedId);
         return;
       }
 

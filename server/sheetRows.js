@@ -44,7 +44,9 @@ export const buildSheetRows = rows => {
   if (!Array.isArray(rows) || rows.length === 0) return [];
   const headers = rows[0].map(normalizeSheetHeader);
   const idxLink = headers.indexOf('link');
-  const idxFile = headers.indexOf('tg_file_name');
+  const idxFile = headers.indexOf('tg_file_name') >= 0
+    ? headers.indexOf('tg_file_name')
+    : headers.indexOf('file_name');
   const idxMode = headers.indexOf('analog_digital');
   const idxStatus = headers.indexOf('status');
   const idxCamera = headers.indexOf('camera_type');
@@ -71,6 +73,24 @@ export const buildSheetRows = rows => {
     });
   }
   return output;
+};
+
+export const buildAiChannelSheetValues = (headers, row, modeLabel) => {
+  const names = (headers || []).map(normalizeSheetHeader);
+  const fileIndex = names.indexOf('file_name') >= 0
+    ? names.indexOf('file_name')
+    : names.indexOf('tg_file_name');
+  if (fileIndex < 0) throw new Error('sheet_match_column_missing');
+  const values = Array(Math.max(fileIndex + 1, 7)).fill('');
+  values[0] = String(row.link || '');
+  values[1] = String(row.double || '');
+  values[2] = String(row.status || 'to cut');
+  values[3] = String(row.cameraType || 'Optical');
+  values[4] = String(row.labels || '');
+  values[5] = modeLabel;
+  values[6] = String(row.cuttedLink || '');
+  values[fileIndex] = String(row.fileName || '').trim();
+  return values;
 };
 
 export const buildLinkFilenameMap = rows => {
