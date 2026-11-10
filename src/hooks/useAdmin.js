@@ -2226,16 +2226,17 @@ export default function useAdmin({
   }, [fetchAdminJson, showHud]);
 
   const addVideosFromServer = useCallback(async (options = {}) => {
-    const { modes = [], snow = 'any', onlySheet = true } = options;
+    const { modes = [], snow = 'any', onlySheet = true, silent = false } = options;
+    const hud = silent ? () => {} : showHud;
     const data = await fetchAdminJson('/files');
     if (!data?.files) return;
     if (data.files.length === 0) {
-      showHud("Файлів не знайдено");
+      hud("Файлів не знайдено");
       return;
     }
     const sheetMap = await loadSheetMap();
     if (!sheetMap) {
-      showHud("Таблиця не завантажена");
+      hud("Таблиця не завантажена");
       if (onlySheet) return;
     }
     const savedEdits = savedEditsRef.current || {};
@@ -2393,14 +2394,14 @@ export default function useAdmin({
     }
     if (!currentId && dedupedList[0]) setCurrentId(dedupedList[0].id);
     if (newVideos.length === 0) {
-      showHud(
+      hud(
         mergedUpdates.length > 0
           ? `Оновлено ${mergedUpdates.length} файлів`
           : "Нових файлів немає"
       );
       return;
     }
-    showHud(`Додано ${newVideos.length} файлів`);
+    hud(`Додано ${newVideos.length} файлів`);
   }, [
     buildEditFromSaved,
     currentId,
@@ -2453,22 +2454,24 @@ export default function useAdmin({
   }, [loadAdminConfig]);
 
   // Серверна версія: файли з робочої теки підтягуються САМІ — при старті
-  // й щохвилини, без ручного «Підтягнути з теки». Політика імпорту та сама,
-  // що в пікера за замовчуванням: усі режими, будь-який сніг, не лише таблиця.
+  // й кожні 5 хвилин, без ручного «Підтягнути з теки». Тихо (silent):
+  // автоматична перевірка не показує HUD-тостів — вони лише для кнопки.
+  // Політика імпорту та сама, що в пікера за замовчуванням: усі режими,
+  // будь-який сніг, не лише таблиця.
   useEffect(() => {
     if (!IS_REMOTE_HOST) return;
     if (!adminConfig.baseDir) return;
     const run = () => {
       if (typeof document !== 'undefined' && document.hidden) return;
       try {
-        const r = addVideosFromServer({ modes: [], snow: 'any', onlySheet: false });
+        const r = addVideosFromServer({ modes: [], snow: 'any', onlySheet: false, silent: true });
         if (r && typeof r.catch === 'function') r.catch(() => {});
       } catch {
-        /* наступний цикл за хвилину повторить */
+        /* наступний цикл повторить */
       }
     };
     const first = window.setTimeout(run, 2000);
-    const iv = window.setInterval(run, 60000);
+    const iv = window.setInterval(run, 300000);
     return () => {
       window.clearTimeout(first);
       window.clearInterval(iv);
