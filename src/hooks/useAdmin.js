@@ -1394,6 +1394,30 @@ export default function useAdmin({
     [activeVideo, getExpectedModesForAi, playlist]
   );
 
+  // Якщо серед цілей є відео, що вже мають сегменти нарізки, — питаємо:
+  // перерізати заново (нові канали додадуться, наявні сегменти перезапишуться)
+  // чи пропустити їх і не палити час Colab на повторну обробку.
+  const askAboutAlreadyCut = useCallback(
+    targets => {
+      const alreadyCut = targets.filter(item => {
+        const edit = edits?.[item.id];
+        if (!edit) return false;
+        const sets = normalizeSegmentSets(edit.segmentSets, edit.segments, edit.segmentMode || 'digital');
+        return Object.values(sets).some(list => Array.isArray(list) && list.length > 0);
+      });
+      if (alreadyCut.length === 0) return targets;
+      const names = alreadyCut.slice(0, 6).map(item => item.name || item.fileKey || item.id).join(', ');
+      const more = alreadyCut.length > 6 ? ` і ще ${alreadyCut.length - 6}` : '';
+      const redo = window.confirm(
+        `Уже нарізані відео: ${alreadyCut.length} (${names}${more}).\n\nПерерізати їх заново? Нові канали додадуться, наявні сегменти перезапишуться.\n\nOK — перерізати всі\nСкасувати — пропустити вже нарізані`
+      );
+      if (redo) return targets;
+      const skip = new Set(alreadyCut.map(item => item.id));
+      return targets.filter(item => !skip.has(item.id));
+    },
+    [edits]
+  );
+
   const buildAiQueue = useCallback((targets, provider) => {
     setAdminAiQueue(
       targets.map(item => ({
@@ -1408,9 +1432,10 @@ export default function useAdmin({
   }, []);
 
   const runAdminAiSegments = useCallback(async (overrideIds = null) => {
-    const targets = resolveAiTargets(overrideIds);
+    const resolvedTargets = resolveAiTargets(overrideIds);
+    const targets = askAboutAlreadyCut(resolvedTargets);
     if (targets.length === 0) {
-      showHud("Немає вибраних відео з каналами таблиці");
+      showHud(resolvedTargets.length > 0 ? "Усі обрані вже нарізані — пропускаю" : "Немає вибраних відео з каналами таблиці");
       return;
     }
     const files = targets
@@ -1510,6 +1535,7 @@ export default function useAdmin({
     adminConfig.aiModelPath,
     adminConfig.aiPythonPath,
     applyAiSegments,
+    askAboutAlreadyCut,
     buildAiQueue,
     fetchAdminJson,
     getExpectedModesForAi,
@@ -1520,9 +1546,10 @@ export default function useAdmin({
   ]);
 
   const runAdminAiSegmentsNgrok = useCallback(async (overrideIds = null) => {
-    const targets = resolveAiTargets(overrideIds);
+    const resolvedTargets = resolveAiTargets(overrideIds);
+    const targets = askAboutAlreadyCut(resolvedTargets);
     if (targets.length === 0) {
-      showHud('Немає вибраних відео з каналами таблиці');
+      showHud(resolvedTargets.length > 0 ? 'Усі обрані вже нарізані — пропускаю' : 'Немає вибраних відео з каналами таблиці');
       return;
     }
     const remoteBase = String(adminConfig.aiRemoteUrl || '').trim().replace(/\/+$/, '');
@@ -1625,13 +1652,14 @@ export default function useAdmin({
     showHud(processed ? `Старий Colab: готово ${processed}, помилок ${failed}` : failed ? 'Старий Colab не відпрацював' : 'Немає сегментів');
   }, [
     adminBaseUrl, adminConfig.aiFps, adminConfig.aiMinDuration, adminConfig.aiRemoteUrl,
-    applyAiSegments, buildAiQueue, resolveAiTargets, setAiQueueStatus, showHud
+    applyAiSegments, askAboutAlreadyCut, buildAiQueue, resolveAiTargets, setAiQueueStatus, showHud
   ]);
 
   const runAdminAiSegmentsRemote = useCallback(async (overrideIds = null) => {
-    const targets = resolveAiTargets(overrideIds);
+    const resolvedTargets = resolveAiTargets(overrideIds);
+    const targets = askAboutAlreadyCut(resolvedTargets);
     if (targets.length === 0) {
-      showHud("Немає вибраних відео з каналами таблиці");
+      showHud(resolvedTargets.length > 0 ? "Усі обрані вже нарізані — пропускаю" : "Немає вибраних відео з каналами таблиці");
       return;
     }
     if (!adminConfig.aiDriveRemote) {
@@ -1889,6 +1917,7 @@ export default function useAdmin({
     adminConfig.aiMinDuration,
     adminConfig.aiDriveRemote,
     applyAiSegments,
+    askAboutAlreadyCut,
     fetchAdminJson,
     getExpectedModesForAi,
     resolveAiTargets,
