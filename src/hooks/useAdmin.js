@@ -1535,7 +1535,8 @@ export default function useAdmin({
     const proxyBase = `${adminBaseUrl.replace(/\/+$/, '')}/ai/remote-proxy/${encodeURIComponent(remoteBase)}`;
     let processed = 0;
     let failed = 0;
-    const updateStats = () => setAdminAiStats({ processed, failed });
+    let mismatched = 0;
+    const updateStats = () => setAdminAiStats({ processed, failed, mismatched });
     buildAiQueue(targets, 'ngrok');
     setAdminAiLoading(true);
     setAdminAiStats(null);
@@ -1583,6 +1584,14 @@ export default function useAdmin({
         const segmentCount = countAiSegments(segments);
         if (!segmentCount) {
           const detail = describeRemoteAiResponse(result);
+          if (countAiSegments(raw) > 0) {
+            // Модель сегменти знайшла, але не в тих каналах, що очікує таблиця:
+            // це не помилка нарізки, а розбіжність «таблиця ↔ вміст» — окремий статус.
+            mismatched += 1;
+            setAiQueueStatus(target.id, { status: 'mismatch', error: 'channel_mismatch', errorDetail: detail, segmentCount: 0 });
+            updateStats();
+            continue;
+          }
           failed += 1;
           setAdminAiLastError(`${fileName}: Colab завершив task, але сегментів не знайдено. ${detail}`);
           setAiQueueStatus(target.id, { status: 'error', error: 'no_segments', errorDetail: detail, segmentCount: 0 });
@@ -2022,7 +2031,7 @@ export default function useAdmin({
   }, [adminAiQueue, fetchAdminJson, showHud]);
 
   const retryAdminAiFailed = useCallback(async () => {
-    const failed = adminAiQueue.filter(item => item.status === 'error');
+    const failed = adminAiQueue.filter(item => item.status === 'error' || item.status === 'mismatch');
     if (failed.length === 0) {
       showHud("Немає помилок");
       return;

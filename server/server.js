@@ -617,7 +617,8 @@ const proxyAiRemote = (req, res, remotePath) => {
         !(/(^|\.)trycloudflare\.com$|(^|\.)ngrok-free\.app$|(^|\.)batraktar\.pp\.ua$/.test(host))) {
       return res.status(400).json({ ok: false, error: 'unsupported_ai_tunnel_url' });
     }
-    target = new URL(remotePath, `${base.origin}/`);
+    const baseHref = base.href.endsWith('/') ? base.href : `${base.href}/`;
+    target = new URL(remotePath.replace(/^\//, ''), baseHref);
   } catch {
     return res.status(400).json({ ok: false, error: 'invalid_ai_tunnel_url' });
   }

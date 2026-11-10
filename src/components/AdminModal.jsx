@@ -237,6 +237,7 @@ export default function AdminModal({
   const aiQueueTotal = aiQueue.length;
   const aiQueueDone = aiQueue.filter(item => item.status === 'done').length;
   const aiQueueFailed = aiQueue.filter(item => item.status === 'error').length;
+  const aiQueueMismatch = aiQueue.filter(item => item.status === 'mismatch').length;
   const aiQueuePending = aiQueue.filter(item => item.status === 'pending').length;
   const aiQueueUploading = aiQueue.filter(item => item.status === 'uploading').length;
   const aiQueueAccepted = aiQueue.filter(item => item.status === 'accepted').length;
@@ -785,7 +786,7 @@ export default function AdminModal({
             </div>}
             {adminAiStats && (
               <div className="mt-1 text-[10px] text-slate-400">
-                {adminAiColabMode === 'drive' ? `У Drive: ${adminAiStats.accepted ?? 0} • ` : ''}Оброблено: {adminAiStats.processed ?? 0} • помилки: {adminAiStats.failed ?? 0}
+                {adminAiColabMode === 'drive' ? `У Drive: ${adminAiStats.accepted ?? 0} • ` : ''}Оброблено: {adminAiStats.processed ?? 0} • помилки: {adminAiStats.failed ?? 0}{(adminAiStats.mismatched ?? 0) > 0 ? ` • перевір тип: ${adminAiStats.mismatched}` : ''}
               </div>
             )}
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-slate-400">
@@ -803,7 +804,7 @@ export default function AdminModal({
                   <span>
                     {adminAiColabMode === 'drive'
                       ? `Не передано: ${aiQueuePending} • Передається: ${aiQueueUploading} • У Drive, чекають Colab: ${aiQueueAccepted} • Colab обробляє: ${aiQueueProcessing} • Готово: ${aiQueueDone}/${aiQueueTotal} • Помилки: ${aiQueueFailed}`
-                      : `Очікує: ${aiQueuePending} • У роботі: ${aiQueueRunning} • Готово: ${aiQueueDone}/${aiQueueTotal} • Помилки: ${aiQueueFailed}`}
+                      : `Очікує: ${aiQueuePending} • У роботі: ${aiQueueRunning} • Готово: ${aiQueueDone}/${aiQueueTotal} • Помилки: ${aiQueueFailed}${aiQueueMismatch > 0 ? ` • Перевір тип: ${aiQueueMismatch}` : ''}`}
                   </span>
                   <div className="flex gap-2">
                     <button
@@ -817,7 +818,7 @@ export default function AdminModal({
                     <button
                       onClick={onRetryAiFailed}
                       className="px-2 py-1 rounded text-[10px] font-bold bg-amber-500/80 hover:bg-amber-500 text-white"
-                      disabled={adminAiLoading || aiQueueFailed === 0}
+                      disabled={adminAiLoading || (aiQueueFailed === 0 && aiQueueMismatch === 0)}
                     >
                       Повторити помилки
                     </button>
@@ -846,6 +847,8 @@ export default function AdminModal({
                             ? 'text-emerald-400'
                           : ['running', 'uploading', 'accepted', 'processing'].includes(item.status)
                               ? 'text-amber-400'
+                              : item.status === 'mismatch'
+                                ? 'text-sky-400'
                               : item.status === 'error'
                                 ? 'text-rose-400'
                                 : 'text-slate-400'
@@ -861,6 +864,8 @@ export default function AdminModal({
                                   ? 'обробляється'
                                   : item.status === 'running'
                                     ? 'в роботі'
+                                : item.status === 'mismatch'
+                                  ? 'перевір тип каналу'
                                 : item.status === 'error'
                               ? item.error === 'no_segments'
                             ? ['colab', 'ngrok'].includes(item.provider)
