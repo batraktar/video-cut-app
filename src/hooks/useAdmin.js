@@ -43,7 +43,7 @@ import { getPlaylistItemChecked, getPlaylistSelection } from '../features/editor
 
 const ADMIN_AI_QUEUE_STORAGE_KEY = 'videoCut.adminAiQueue.v2';
 const AI_SHEET_SUGGESTIONS_STORAGE_KEY = 'videoCut.aiSheetSuggestions.v1';
-const SERVER_CUT_APPLIED_KEY = 'videoCut.serverCutApplied.v1';
+const SERVER_CUT_APPLIED_KEY = 'videoCut.serverCutApplied.v2';
 // Версія серверного результату нарізки: щоб автоматика не застосовувала
 // той самий результат повторно, а лише нові/перерізані.
 const cutResultVersion = item => {
@@ -2128,6 +2128,7 @@ export default function useAdmin({
         if (video.fileKey) byName.set(video.fileKey, video);
       });
       const toApply = [];
+      const mismatches = [];
       let skipped = 0;
       for (const item of items) {
         const video = byName.get(item.name);
@@ -2139,18 +2140,40 @@ export default function useAdmin({
         const segments = Object.fromEntries(Object.entries(raw).filter(([mode, values]) =>
           allowedModes.has(mode) && Array.isArray(values) && values.length > 0
         ));
-        if (countAiSegments(segments) === 0) { skipped += 1; continue; }
+        if (countAiSegments(segments) === 0) {
+          if (countAiSegments(raw) > 0) {
+            // Модель нарізала, але не ті канали, що очікує таблиця: як і в
+            // ручному AI-потоці, сегменти НЕ кладемо — відео отримує статус
+            // «перевір тип каналу» в AI-черзі редактора.
+            mismatches.push({ id: video.id, name: video.name || video.fileKey || item.name, sourcePath: video.sourcePath || '', detail: describeRemoteAiResponse(item.result || {}), _name: item.name, _version: version });
+          } else {
+            skipped += 1;
+          }
+          continue;
+        }
         toApply.push({ id: video.id, sourcePath: video.sourcePath || '', segments, _name: item.name, _version: version });
       }
-      if (toApply.length > 0) {
-        applyAiSegments(toApply.map(({ _name, _version, ...rest }) => rest));
+      if (mismatches.length > 0) {
+        setAdminAiQueue(prev => {
+          const map = new Map(prev.map(q => [q.id, q]));
+          mismatches.forEach(m => {
+            map.set(m.id, { ...(map.get(m.id) || {}), id: m.id, name: m.name, sourcePath: m.sourcePath, status: 'mismatch', provider: 'colab', error: 'channel_mismatch', errorDetail: m.detail, segmentCount: 0 });
+          });
+          return [...map.values()];
+        });
+      }
+      if (toApply.length > 0 || mismatches.length > 0) {
         if (auto) {
           const next = { ...markers };
           toApply.forEach(({ _name, _version }) => { next[_name] = _version; });
+          mismatches.forEach(({ _name, _version }) => { next[_name] = _version; });
           saveToStorage(SERVER_CUT_APPLIED_KEY, next);
-          showHud(`З сервера підтягнулось нових нарізок: ${toApply.length}`);
+        }
+        if (toApply.length > 0) applyAiSegments(toApply.map(({ _name, _version, ...rest }) => rest));
+        if (auto) {
+          showHud(`З сервера підтягнулось нових нарізок: ${toApply.length}` + (mismatches.length > 0 ? ` · перевір тип каналу: ${mismatches.length}` : ''));
         } else {
-          showHud(`Серверні нарізки: застосовано ${toApply.length}, пропущено ${skipped}`);
+          showHud(`Серверні нарізки: застосовано ${toApply.length}, перевір тип каналу: ${mismatches.length}, пропущено ${skipped}`);
         }
       } else if (!auto) {
         showHud(`Серверні нарізки: застосовано 0, пропущено ${skipped}`);
@@ -2158,7 +2181,7 @@ export default function useAdmin({
     } finally {
       pullCutInFlight.current = false;
     }
-  }, [applyAiSegments, getExpectedModesForAi, playlist, showHud]);
+  }, [applyAiSegments, getExpectedModesForAi, playlist, setAdminAiQueue, showHud]);
 
   const pullCutRef = useRef(pullServerCutResults);
   pullCutRef.current = pullServerCutResults;
