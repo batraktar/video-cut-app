@@ -1217,6 +1217,24 @@ export default function useAdmin({
       return;
     }
 
+    // Після повністю успішного експорту на Drive оригінали переїжджають у done:
+    // рядки перейменування стоять у згенерованій команді після перевірки помилок,
+    // тож за будь-якого фейлу рендера чи завантаження оригінали лишаються на місці.
+    const doneRenameLines = uploadToDrive
+      ? [
+          ...new Set(
+            manifestFiles
+              .map(file =>
+                buildRenameCommand(
+                  { name: file.sourceName, sourcePath: file.sourcePath },
+                  'done'
+                )
+              )
+              .filter(Boolean)
+          )
+        ]
+      : [];
+
     const command = buildClipchampExportCommand({
       localDir,
       remoteName,
@@ -1231,7 +1249,8 @@ export default function useAdmin({
         ...(uploadToDrive ? { driveFolderId: rootFolderId, remote: remoteName } : {}),
         files: manifestFiles,
         skipped
-      }
+      },
+      doneRenameLines
     });
     const data = await fetchAdminJson('/jobs', {
       method: 'POST',

@@ -139,9 +139,12 @@ export const buildTelegramSheetSyncPlan = (parseValues, preFinalValues, mapRows)
     parseRows.set(key, { ...csvRow, rowIndex: existing?.rowIndex });
   }
 
+  // Назви для pre-final беремо ТІЛЬКИ з links_map.csv — це відео, реально
+  // завантажені завантажувачем. Вкладка parse — лише дзеркало історії в самій
+  // таблиці, а не джерело: інакше підтягуються назви файлів, яких на сервері нема.
   const preFinalNames = (preFinalValues || []).slice(1).map(row => {
     const key = normalizeTelegramLink(getCell(row, 0));
-    return [parseRows.get(key)?.filename || ''];
+    return [latestCsvRows.get(key)?.filename || ''];
   });
 
   return { parseUpdates, parseAppends, preFinalNames };

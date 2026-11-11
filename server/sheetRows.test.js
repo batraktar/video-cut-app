@@ -66,7 +66,7 @@ describe('sheet row mapping', () => {
     expect(resolveSheetRangeByGid(sheets, '0', 'pre!A:K')).toBe("'parse'!A:K");
   });
 
-  it('updates parse mappings from the latest CSV rows and fills pre-final column H by link', () => {
+  it('updates parse mappings from the latest CSV rows and fills pre-final names from the CSV only', () => {
     const plan = buildTelegramSheetSyncPlan(
       [
         ['tg_link', 'tg_file_name'],
@@ -89,7 +89,7 @@ describe('sheet row mapping', () => {
     expect(plan).toEqual({
       parseUpdates: [{ rowIndex: 2, filename: 'latest.mp4' }],
       parseAppends: [['https://t.me/example/3', 'new.mp4']],
-      preFinalNames: [['latest.mp4'], ['same.mp4'], ['new.mp4']]
+      preFinalNames: [['latest.mp4'], [''], ['new.mp4']]
     });
   });
 

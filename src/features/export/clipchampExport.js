@@ -56,7 +56,8 @@ export const buildClipchampExportCommand = ({
   folderName,
   processingLines,
   linksRows,
-  manifest
+  manifest,
+  doneRenameLines = []
 }) => {
   const cleanRemote = String(remoteName || '').trim().replace(/:+$/, '');
   const remoteTarget = `${cleanRemote}:`;
@@ -103,6 +104,7 @@ export const buildClipchampExportCommand = ({
           "  printf 'CLIPCHAMP_EXPORT_FAILED\\n'",
           '  exit 1',
           'fi',
+          ...(Array.isArray(doneRenameLines) ? doneRenameLines : []),
           `printf '\\nDrive folder: %s\\n' ${shellQuote(parentUrl)} | tee -a ${shellQuote(logPath)}`,
           `printf 'CLIPCHAMP_EXPORT_DONE\\n%s\\n' ${shellQuote(parentUrl)}`
         ]

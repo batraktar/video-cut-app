@@ -65,4 +65,42 @@ describe('Clipchamp Drive export', () => {
     expect(command).toContain('CLIPCHAMP_EXPORT_DONE');
     expect(command).not.toContain('rclone');
   });
+
+  it('places done-rename lines after the failure gate on Drive exports', () => {
+    const renameLine =
+      '[ -e "./IMG_1.MP4" ] && [ ! -e "done/IMG_1_done.MP4" ] && mkdir -p "done" && mv "./IMG_1.MP4" "done/IMG_1_done.MP4"';
+    const command = buildClipchampExportCommand({
+      localDir: 'Clipchamp_exports/session',
+      remoteName: 'lqd-kotyk-helper',
+      rootFolderId: 'folder-id',
+      folderName: 'session',
+      uploadToDrive: true,
+      processingLines: ['ffmpeg test'],
+      linksRows: [{ link: '', filename: 'video.mp4' }],
+      manifest: { files: [{ filename: 'video.mp4' }] },
+      doneRenameLines: [renameLine]
+    });
+
+    const gateIndex = command.indexOf('exit 1');
+    const renameIndex = command.indexOf(renameLine);
+    const doneIndex = command.indexOf('CLIPCHAMP_EXPORT_DONE');
+    expect(gateIndex).toBeGreaterThanOrEqual(0);
+    expect(renameIndex).toBeGreaterThan(gateIndex);
+    expect(doneIndex).toBeGreaterThan(renameIndex);
+  });
+
+  it('omits done-rename lines for local-only exports', () => {
+    const renameLine = 'mv "./IMG_1.MP4" "done/IMG_1_done.MP4"';
+    const command = buildClipchampExportCommand({
+      localDir: 'Clipchamp_exports/session',
+      folderName: 'session',
+      uploadToDrive: false,
+      processingLines: ['ffmpeg test'],
+      linksRows: [{ link: '', filename: 'video.mp4' }],
+      manifest: { files: [{ filename: 'video.mp4' }] },
+      doneRenameLines: [renameLine]
+    });
+
+    expect(command).not.toContain(renameLine);
+  });
 });

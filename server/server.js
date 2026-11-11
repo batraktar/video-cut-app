@@ -59,7 +59,7 @@ const VIDEO_EXTENSIONS = new Set([
   '.m2ts',
   '.3gp'
 ]);
-const IGNORED_DIRS = new Set(['cutted', 'done', '.git', '__MACOSX']);
+const IGNORED_DIRS = new Set(['cutted', 'done', 'Clipchamp_exports', '.git', '__MACOSX']);
 const VIDEO_MIME = {
   '.mp4': 'video/mp4',
   '.mov': 'video/quicktime',
