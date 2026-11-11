@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { CloudUpload, Layers, RefreshCw, Save } from 'lucide-react';
 import { SEGMENT_MODES } from '../lib/editorConstants';
+import { formatMismatchHuman } from '../lib/mismatchText';
 import {
   formatExportBytes,
   getClipchampJobStatus,
@@ -933,8 +934,8 @@ export default function AdminModal({
                         </div>
                       )}
                       {item.errorDetail && (
-                        <div className="mt-0.5 break-words text-[9px] leading-3 text-rose-300">
-                          {item.errorDetail}
+                        <div className={`mt-0.5 break-words text-[9px] leading-3 ${item.status === 'mismatch' ? 'text-sky-300' : 'text-rose-300'}`}>
+                          {item.status === 'mismatch' ? formatMismatchHuman(item) : item.errorDetail}
                         </div>
                       )}
                       {Array.isArray(item.logs) && item.logs.length > 0 && (

@@ -48,6 +48,7 @@ import { buildEditFromSaved, getSavedEditForVideo } from './features/playlist/ed
 import AppOverlays from './components/AppOverlays';
 import EditorLayout from './components/EditorLayout';
 import usePlaylistMetaPreload from './features/playlist/usePlaylistMetaPreload';
+import { formatMismatchHuman } from './lib/mismatchText';
 import useAdmin from './hooks/useAdmin';
 import usePlaylist from './hooks/usePlaylist';
 
@@ -2457,21 +2458,11 @@ export default function App() {
   const activeMismatch = (adminAiQueue || []).find(q => q.id === currentId && q.status === 'mismatch');
   const [mismatchNoticeOff, setMismatchNoticeOff] = useState(null);
   const mismatchNoticeKey = activeMismatch ? `${activeMismatch.id}|${activeMismatch.errorDetail || ''}` : null;
-  const modeLabel = id => SEGMENT_MODES.find(m => m.id === id)?.label || id;
   const mismatchNotice = activeMismatch && mismatchNoticeOff !== mismatchNoticeKey ? (
     <div className={`flex items-start gap-3 px-4 py-2.5 border-b text-xs ${isDark ? 'bg-sky-900/40 text-sky-100 border-sky-800' : 'bg-sky-100 text-sky-900 border-sky-300'}`}>
       <div className="flex-1 leading-relaxed">
         <b>Перевір тип каналу.</b>{' '}
-        {activeMismatch.labelCounts ? (
-          <>
-            Модель знайшла: {Object.entries(activeMismatch.labelCounts).map(([k, v]) => `${modeLabel(k)}: ${v}`).join(', ')}.
-            {Array.isArray(activeMismatch.expectedModes) && activeMismatch.expectedModes.length > 0 && (
-              <> У таблиці: {activeMismatch.expectedModes.map(modeLabel).join(', ')}.</>
-            )}
-          </>
-        ) : (
-          <>{activeMismatch.errorDetail || 'Канали моделі не збігаються з таблицею.'}</>
-        )}
+        {formatMismatchHuman(activeMismatch)}
       </div>
       <button onClick={() => setMismatchNoticeOff(mismatchNoticeKey)} className="px-2 py-0.5 rounded border border-current opacity-70 hover:opacity-100">Зрозуміло</button>
     </div>
