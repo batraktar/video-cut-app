@@ -43,6 +43,14 @@ import { getPlaylistItemChecked, getPlaylistSelection } from '../features/editor
 
 const ADMIN_AI_QUEUE_STORAGE_KEY = 'videoCut.adminAiQueue.v2';
 const AI_SHEET_SUGGESTIONS_STORAGE_KEY = 'videoCut.aiSheetSuggestions.v1';
+const SERVER_CUT_APPLIED_KEY = 'videoCut.serverCutApplied.v1';
+// Версія серверного результату нарізки: щоб автоматика не застосовувала
+// той самий результат повторно, а лише нові/перерізані.
+const cutResultVersion = item => {
+  const r = (item && item.result) || {};
+  if (r.finished_at) return 'f' + r.finished_at;
+  return 'h' + JSON.stringify(r.label_counts || {}) + ':' + (r.frame_count || 0);
+};
 const createId = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
 // Серверна версія редактора (не localhost): API — той самий origin
@@ -2089,42 +2097,77 @@ export default function useAdmin({
 
   // Забрати готові нарізки, які серверний пайплайн зробив у фоні
   // (Telegram → черга → Colab), і застосувати їх до відео за назвами файлів.
-  const pullServerCutResults = useCallback(async () => {
-    let data;
+  // Автоматика (вимога Максима): редактор сам підтягує нові нарізки —
+  // при відкритті й далі кожні 2 хвилини; кнопка — лише ручний запас,
+  // якщо щось злетіло (ручний виклик застосовує все примусово).
+  const pullCutInFlight = useRef(false);
+  const pullServerCutResults = useCallback(async (opts = {}) => {
+    const auto = Boolean(opts && opts.auto);
+    if (pullCutInFlight.current) return;
+    if (auto && playlist.length === 0) return;
+    pullCutInFlight.current = true;
     try {
-      const res = await fetch('/ui/cut-results', { cache: 'no-store' });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      data = await res.json();
-    } catch {
-      showHud('Не вдалося забрати результати з сервера');
-      return;
+      let data;
+      try {
+        const res = await fetch('/ui/cut-results', { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        data = await res.json();
+      } catch {
+        if (!auto) showHud('Не вдалося забрати результати з сервера');
+        return;
+      }
+      const items = Array.isArray(data?.items) ? data.items : [];
+      if (items.length === 0) {
+        if (!auto) showHud('На сервері ще немає готових нарізок');
+        return;
+      }
+      const markers = auto ? (loadFromStorage(SERVER_CUT_APPLIED_KEY, {}) || {}) : {};
+      const byName = new Map();
+      playlist.forEach(video => {
+        if (video.name) byName.set(video.name, video);
+        if (video.fileKey) byName.set(video.fileKey, video);
+      });
+      const toApply = [];
+      let skipped = 0;
+      for (const item of items) {
+        const video = byName.get(item.name);
+        if (!video) { skipped += 1; continue; }
+        const version = cutResultVersion(item);
+        if (auto && markers[item.name] === version) { skipped += 1; continue; }
+        const raw = normalizeRemoteAiSegments(item.result || {});
+        const allowedModes = new Set(getExpectedModesForAi(video));
+        const segments = Object.fromEntries(Object.entries(raw).filter(([mode, values]) =>
+          allowedModes.has(mode) && Array.isArray(values) && values.length > 0
+        ));
+        if (countAiSegments(segments) === 0) { skipped += 1; continue; }
+        toApply.push({ id: video.id, sourcePath: video.sourcePath || '', segments, _name: item.name, _version: version });
+      }
+      if (toApply.length > 0) {
+        applyAiSegments(toApply.map(({ _name, _version, ...rest }) => rest));
+        if (auto) {
+          const next = { ...markers };
+          toApply.forEach(({ _name, _version }) => { next[_name] = _version; });
+          saveToStorage(SERVER_CUT_APPLIED_KEY, next);
+          showHud(`З сервера підтягнулось нових нарізок: ${toApply.length}`);
+        } else {
+          showHud(`Серверні нарізки: застосовано ${toApply.length}, пропущено ${skipped}`);
+        }
+      } else if (!auto) {
+        showHud(`Серверні нарізки: застосовано 0, пропущено ${skipped}`);
+      }
+    } finally {
+      pullCutInFlight.current = false;
     }
-    const items = Array.isArray(data?.items) ? data.items : [];
-    if (items.length === 0) {
-      showHud('На сервері ще немає готових нарізок');
-      return;
-    }
-    const byName = new Map();
-    playlist.forEach(video => {
-      if (video.name) byName.set(video.name, video);
-      if (video.fileKey) byName.set(video.fileKey, video);
-    });
-    const toApply = [];
-    let skipped = 0;
-    for (const item of items) {
-      const video = byName.get(item.name);
-      if (!video) { skipped += 1; continue; }
-      const raw = normalizeRemoteAiSegments(item.result || {});
-      const allowedModes = new Set(getExpectedModesForAi(video));
-      const segments = Object.fromEntries(Object.entries(raw).filter(([mode, values]) =>
-        allowedModes.has(mode) && Array.isArray(values) && values.length > 0
-      ));
-      if (countAiSegments(segments) === 0) { skipped += 1; continue; }
-      toApply.push({ id: video.id, sourcePath: video.sourcePath || '', segments });
-    }
-    if (toApply.length > 0) applyAiSegments(toApply);
-    showHud(`Серверні нарізки: застосовано ${toApply.length}, пропущено ${skipped}`);
   }, [applyAiSegments, getExpectedModesForAi, playlist, showHud]);
+
+  const pullCutRef = useRef(pullServerCutResults);
+  pullCutRef.current = pullServerCutResults;
+  useEffect(() => {
+    if (!IS_REMOTE_HOST) return undefined;
+    const first = setTimeout(() => { pullCutRef.current({ auto: true }); }, 6000);
+    const timer = setInterval(() => { pullCutRef.current({ auto: true }); }, 120000);
+    return () => { clearTimeout(first); clearInterval(timer); };
+  }, []);
 
   const runAdminLogoDetection = useCallback(async () => {
     const selected = playlist.filter(p => p.checked);
