@@ -53,8 +53,31 @@ export const buildFilterGraph = ({ meta, crop, elements, segments }) => {
       const radians = (rotation * Math.PI) / 180;
       const cos = Math.cos(radians).toFixed(8);
       const sin = Math.sin(radians).toFixed(8);
-      const dx = `((X-${centerX})*${cos}+(Y-${centerY})*${sin})`;
-      const dy = `((Y-${centerY})*${cos}-(X-${centerX})*${sin})`;
+      // geq рахується лише всередині обмежувальної рамки фігури, а не на
+      // всьому кадрі: фігура статична, тож джерелу досить 1 кадру/сек.
+      // Початок рамки зсунуто на цілі пікселі, тому значення альфи
+      // попіксельно збігаються з повнокадровим варіантом.
+      const absCos = Math.abs(Math.cos(radians));
+      const absSin = Math.abs(Math.sin(radians));
+      let halfBoxX;
+      let halfBoxY;
+      if (el?.type === 'circle') {
+        const radiusX = Math.max(0.5, w / 2);
+        const radiusY = Math.max(0.5, h / 2);
+        halfBoxX = Math.sqrt((radiusX * absCos) ** 2 + (radiusY * absSin) ** 2);
+        halfBoxY = Math.sqrt((radiusX * absSin) ** 2 + (radiusY * absCos) ** 2);
+      } else {
+        halfBoxX = (w / 2) * absCos + (h / 2) * absSin;
+        halfBoxY = (w / 2) * absSin + (h / 2) * absCos;
+      }
+      const boxX = clamp(Math.floor(centerX - halfBoxX) - 2, 0, Math.max(0, meta.width - 1));
+      const boxY = clamp(Math.floor(centerY - halfBoxY) - 2, 0, Math.max(0, meta.height - 1));
+      const boxW = clamp(Math.ceil(centerX + halfBoxX) + 2 - boxX, 1, meta.width - boxX);
+      const boxH = clamp(Math.ceil(centerY + halfBoxY) + 2 - boxY, 1, meta.height - boxY);
+      const localCenterX = centerX - boxX;
+      const localCenterY = centerY - boxY;
+      const dx = `((X-${localCenterX})*${cos}+(Y-${localCenterY})*${sin})`;
+      const dy = `((Y-${localCenterY})*${cos}-(X-${localCenterX})*${sin})`;
       const ffCall = (name, left, right) => `${name}(${left}\\,${right})`;
       const ellipseInside = (radiusX, radiusY) =>
         ffCall(
@@ -83,7 +106,9 @@ export const buildFilterGraph = ({ meta, crop, elements, segments }) => {
       shapeOverlays.push({
         source: `shape${overlayIndex}`,
         output: `vshape${overlayIndex}`,
-        sourceFilter: `color=c=${color}:s=${meta.width}x${meta.height}:r=25:d=${overlayDuration},format=rgba,geq=r=0:g=0:b=0:a='(${alpha})*255'`,
+        x: boxX,
+        y: boxY,
+        sourceFilter: `color=c=${color}:s=${boxW}x${boxH}:r=1:d=${overlayDuration},format=rgba,geq=r=0:g=0:b=0:a='(${alpha})*255'`,
         enable: `between(t,${elStart.toFixed(3)},${elEnd.toFixed(3)})`
       });
       return;
@@ -112,7 +137,7 @@ export const buildFilterGraph = ({ meta, crop, elements, segments }) => {
   shapeOverlays.forEach(overlay => {
     filterLines.push(`${overlay.sourceFilter}[${overlay.source}]`);
     filterLines.push(
-      `[${videoLabel}][${overlay.source}]overlay=x=0:y=0:shortest=1:enable='${overlay.enable}'[${overlay.output}]`
+      `[${videoLabel}][${overlay.source}]overlay=x=${overlay.x}:y=${overlay.y}:shortest=1:enable='${overlay.enable}'[${overlay.output}]`
     );
     videoLabel = overlay.output;
   });

@@ -49,5 +49,32 @@ describe('buildFilterGraph', () => {
     expect(res.graph).toContain('color=0xff00aa@1');
     expect(res.graph).toContain("enable='between(t,1.000,2.200)'");
   });
+
+  it('renders rotated shapes via a small local geq layer', () => {
+    const res = buildFilterGraph({
+      meta: { width: 1000, height: 800, duration: 10 },
+      crop: { t: 0, b: 0, l: 0, r: 0 },
+      elements: [
+        {
+          type: 'rect',
+          x: 40,
+          y: 40,
+          w: 20,
+          h: 10,
+          rotation: 30,
+          startTime: 1,
+          endTime: 5,
+          color: '#000000'
+        }
+      ],
+      segments: [{ start: 0, end: 5 }]
+    });
+
+    expect(res.error).toBeUndefined();
+    // локальний шар: не весь кадр і лише 1 кадр/сек
+    expect(res.graph).not.toContain('s=1000x800');
+    expect(res.graph).toContain(':r=1:');
+    expect(res.graph).toMatch(/overlay=x=\d+:y=\d+/);
+  });
 });
 
