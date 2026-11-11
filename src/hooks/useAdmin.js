@@ -1630,7 +1630,7 @@ export default function useAdmin({
             // Модель сегменти знайшла, але не в тих каналах, що очікує таблиця:
             // це не помилка нарізки, а розбіжність «таблиця ↔ вміст» — окремий статус.
             mismatched += 1;
-            setAiQueueStatus(target.id, { status: 'mismatch', error: 'channel_mismatch', errorDetail: detail, segmentCount: 0 });
+            setAiQueueStatus(target.id, { status: 'mismatch', error: 'channel_mismatch', errorDetail: detail, labelCounts: result?.label_counts || null, expectedModes: [...allowedModes], segmentCount: 0 });
             updateStats();
             continue;
           }
@@ -2145,7 +2145,7 @@ export default function useAdmin({
             // Модель нарізала, але не ті канали, що очікує таблиця: як і в
             // ручному AI-потоці, сегменти НЕ кладемо — відео отримує статус
             // «перевір тип каналу» в AI-черзі редактора.
-            mismatches.push({ id: video.id, name: video.name || video.fileKey || item.name, sourcePath: video.sourcePath || '', detail: describeRemoteAiResponse(item.result || {}), _name: item.name, _version: version });
+            mismatches.push({ id: video.id, name: video.name || video.fileKey || item.name, sourcePath: video.sourcePath || '', detail: describeRemoteAiResponse(item.result || {}), labelCounts: (item.result && item.result.label_counts) || null, expectedModes: [...allowedModes], _name: item.name, _version: version });
           } else {
             skipped += 1;
           }
@@ -2157,7 +2157,7 @@ export default function useAdmin({
         setAdminAiQueue(prev => {
           const map = new Map(prev.map(q => [q.id, q]));
           mismatches.forEach(m => {
-            map.set(m.id, { ...(map.get(m.id) || {}), id: m.id, name: m.name, sourcePath: m.sourcePath, status: 'mismatch', provider: 'colab', error: 'channel_mismatch', errorDetail: m.detail, segmentCount: 0 });
+            map.set(m.id, { ...(map.get(m.id) || {}), id: m.id, name: m.name, sourcePath: m.sourcePath, status: 'mismatch', provider: 'colab', error: 'channel_mismatch', errorDetail: m.detail, labelCounts: m.labelCounts || null, expectedModes: m.expectedModes || [], segmentCount: 0 });
           });
           return [...map.values()];
         });

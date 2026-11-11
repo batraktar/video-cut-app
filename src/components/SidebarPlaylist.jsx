@@ -56,6 +56,8 @@ function SidebarPlaylist({
   switchVideo,
   toggleSelection,
   edits,
+  aiQueue,
+  metaCache,
   getVideoTooltip,
   getDisplayName,
   getShortId,
@@ -387,7 +389,15 @@ function SidebarPlaylist({
               <>
                 <div style={{ height: `${playlistPaddingTop}px` }} />
 	                {playlistVisibleItems.map(vid => {
-                  const meta = edits[vid.id]?.meta;
+                  const editMeta = edits[vid.id]?.meta;
+                  const meta = (editMeta?.width && editMeta?.duration) ? editMeta : (metaCache?.[vid.id] || editMeta);
+                  const aiEntry = (aiQueue || []).find(q => q.id === vid.id);
+                  const isMismatch = aiEntry?.status === 'mismatch';
+                  const mismatchClass = isMismatch
+                    ? isDark
+                      ? 'ring-1 ring-sky-400/70 bg-sky-900/30'
+                      : 'ring-1 ring-sky-400 bg-sky-50'
+                    : '';
                   const sizeLabel =
                     meta?.width && meta?.height ? `${meta.width}x${meta.height}` : '';
                   const durationLabel =
@@ -415,7 +425,7 @@ function SidebarPlaylist({
                           : isDark
                             ? 'hover:bg-slate-800 border border-transparent'
                             : 'hover:bg-slate-50 border border-transparent'
-	                          } ${dragOverId === vid.id && draggingId !== vid.id ? 'ring-2 ring-indigo-400' : ''} ${dangerClass} ${snowClass}`}
+	                          } ${dragOverId === vid.id && draggingId !== vid.id ? 'ring-2 ring-indigo-400' : ''} ${dangerClass} ${snowClass} ${mismatchClass}`}
                         draggable
                         onDragStart={e => {
                           setDraggingId(vid.id);
@@ -471,6 +481,11 @@ function SidebarPlaylist({
                             {isVideoEdited(edits[vid.id]) && (
                               <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-bold">
                                 Змінено
+                              </span>
+                            )}
+                            {isMismatch && (
+                              <span className="px-1.5 py-0.5 rounded bg-sky-500 text-white text-[10px] font-bold">
+                                перевір тип каналу
                               </span>
                             )}
                             {getVideoChannelBadges(vid).map(mode => (
