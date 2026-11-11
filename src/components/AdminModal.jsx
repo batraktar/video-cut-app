@@ -1559,10 +1559,10 @@ export default function AdminModal({
                 Оновити таблицю з links_map.csv
               </button>
               <p className="mt-1 text-xs text-slate-400">
-                Оновить parse!A:B з CSV і заповнить pre-final!H за посиланнями з колонки A. Інші колонки не змінює.
+                Оновить parse!A:B з CSV і заповнить у pre-final колонку file_name (шукається за заголовком) за посиланнями з колонки A. Інші колонки не змінює.
               </p>
               <p className="mt-1 text-xs text-slate-500">
-                Для pre-final без відповідника в parse!A:B клітинка H очищується, як у твоєму Apps Script. Береться найновіший links_map.csv.
+                Для pre-final без відповідника в parse!A:B клітинка file_name очищується, як у твоєму Apps Script. Береться найновіший links_map.csv.
               </p>
             </div>
           </div>
