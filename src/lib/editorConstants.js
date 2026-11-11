@@ -99,4 +99,5 @@ export const SEGMENT_MODES = [
 
 export const RCLONE_REMOTE = 'lqd-kotyk-helper';
 export const RCLONE_FOLDER = '22.12.2025 [ATV&Drone]';
+export const RCLONE_FOLDER_ID = '1p7uEPZ8WIWWvzbAmy9sV3-L4hWLj-ieb';
 export const RCLONE_FLAGS = '--drive-shared-with-me';

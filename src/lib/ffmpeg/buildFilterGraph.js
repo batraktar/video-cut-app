@@ -78,10 +78,12 @@ export const buildFilterGraph = ({ meta, crop, elements, segments }) => {
       const overlayDuration = resolveDuration(duration)
         ? duration
         : Math.max(0.1, ...segments.map(segment => segment.end));
+      // geq: r/g/b обовʼязкові нулями — ffmpeg ≤ 6.1 відхиляє geq лише з альфою
+      // («A luminance or RGB expression is mandatory»), на нових версіях працює і так.
       shapeOverlays.push({
         source: `shape${overlayIndex}`,
         output: `vshape${overlayIndex}`,
-        sourceFilter: `color=c=${color}:s=${meta.width}x${meta.height}:r=25:d=${overlayDuration},format=rgba,geq=a='(${alpha})*255'`,
+        sourceFilter: `color=c=${color}:s=${meta.width}x${meta.height}:r=25:d=${overlayDuration},format=rgba,geq=r=0:g=0:b=0:a='(${alpha})*255'`,
         enable: `between(t,${elStart.toFixed(3)},${elEnd.toFixed(3)})`
       });
       return;

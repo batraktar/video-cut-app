@@ -3,6 +3,7 @@ import {
   DEFAULT_EDIT_STATE,
   MAX_HISTORY,
   RCLONE_FOLDER,
+  RCLONE_FOLDER_ID,
   RCLONE_FLAGS,
   RCLONE_REMOTE,
   SEGMENT_MODES,
@@ -634,9 +635,11 @@ export default function App() {
     setActiveSegmentMode(next.id);
     showHud(`Сегменти: ${next.label}`);
   };
+  // Завантаження ТІЛЬКИ у фіксовану теку за її ID, файли плоско, без створення папок:
+  // шлях за назвою теки на спільному диску раніше заводив файли не туди.
   const buildRcloneCopyLine = outputPath =>
     uploadToDrive
-      ? `rclone copy "${outputPath}" "${RCLONE_REMOTE}:${RCLONE_FOLDER}" ${RCLONE_FLAGS}`
+      ? `rclone copyto "${outputPath}" "${RCLONE_REMOTE}:${String(outputPath).split('/').pop()}" --drive-root-folder-id ${RCLONE_FOLDER_ID} ${RCLONE_FLAGS}`
       : null;
   const startSidebarResize = e => {
     if (e.button !== 0) return;
