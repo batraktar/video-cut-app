@@ -59,16 +59,26 @@ export const buildFilterGraph = ({ meta, crop, elements, segments }) => {
       // попіксельно збігаються з повнокадровим варіантом.
       const absCos = Math.abs(Math.cos(radians));
       const absSin = Math.abs(Math.sin(radians));
+      // Повернута фігура, притиснута до краю кадру, повертається навколо
+      // центра і лишає по кутах неперекриті трикутники. Сторони, що
+      // торкаються краю кадру, подовжуємо рівно на величину відступу.
+      const tanAbs = absSin / Math.max(0.0001, absCos);
+      const extX = (h / 2) * tanAbs + 2;
+      const extY = (w / 2) * tanAbs + 2;
+      const extL = x <= 0 ? extX : 0;
+      const extR = x + w >= meta.width ? extX : 0;
+      const extT = y <= 0 ? extY : 0;
+      const extB = y + h >= meta.height ? extY : 0;
       let halfBoxX;
       let halfBoxY;
       if (el?.type === 'circle') {
-        const radiusX = Math.max(0.5, w / 2);
-        const radiusY = Math.max(0.5, h / 2);
+        const radiusX = Math.max(0.5, w / 2) + Math.max(extL, extR);
+        const radiusY = Math.max(0.5, h / 2) + Math.max(extT, extB);
         halfBoxX = Math.sqrt((radiusX * absCos) ** 2 + (radiusY * absSin) ** 2);
         halfBoxY = Math.sqrt((radiusX * absSin) ** 2 + (radiusY * absCos) ** 2);
       } else {
-        halfBoxX = (w / 2) * absCos + (h / 2) * absSin;
-        halfBoxY = (w / 2) * absSin + (h / 2) * absCos;
+        halfBoxX = (w / 2 + Math.max(extL, extR)) * absCos + (h / 2 + Math.max(extT, extB)) * absSin;
+        halfBoxY = (w / 2 + Math.max(extL, extR)) * absSin + (h / 2 + Math.max(extT, extB)) * absCos;
       }
       const boxX = clamp(Math.floor(centerX - halfBoxX) - 2, 0, Math.max(0, meta.width - 1));
       const boxY = clamp(Math.floor(centerY - halfBoxY) - 2, 0, Math.max(0, meta.height - 1));
@@ -87,8 +97,15 @@ export const buildFilterGraph = ({ meta, crop, elements, segments }) => {
         );
       const inside =
         el?.type === 'circle'
-          ? ellipseInside(Math.max(0.5, w / 2), Math.max(0.5, h / 2))
-          : `(${ffCall('lt', `abs(${dx})`, w / 2)}*${ffCall('lt', `abs(${dy})`, h / 2)})`;
+          ? ellipseInside(
+              Math.max(0.5, w / 2) + Math.max(extL, extR),
+              Math.max(0.5, h / 2) + Math.max(extT, extB)
+            )
+          : `(${ffCall('gt', dx, -(w / 2 + extL))}*${ffCall('lt', dx, w / 2 + extR)}*${ffCall(
+              'gt',
+              dy,
+              -(h / 2 + extT)
+            )}*${ffCall('lt', dy, h / 2 + extB)})`;
       let alpha = inside;
       if (el?.isOutline) {
         const inner =

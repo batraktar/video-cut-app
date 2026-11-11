@@ -76,5 +76,37 @@ describe('buildFilterGraph', () => {
     expect(res.graph).toContain(':r=1:');
     expect(res.graph).toMatch(/overlay=x=\d+:y=\d+/);
   });
+
+  it('extends rotated shapes that touch the frame edge', () => {
+    const gtBounds = graph =>
+      [...graph.matchAll(/gt\(.+?\\,(-?[\d.]+)\)/g)].map(m => parseFloat(m[1]));
+
+    const flush = buildFilterGraph({
+      meta: { width: 1000, height: 800, duration: 10 },
+      crop: { t: 0, b: 0, l: 0, r: 0 },
+      elements: [
+        { type: 'rect', x: 0, y: 0, w: 100, h: 10, rotation: 30, startTime: 0, endTime: 5, color: '#000000' }
+      ],
+      segments: [{ start: 0, end: 5 }]
+    });
+    const [flushDx, flushDy] = gtBounds(flush.graph);
+    // півширина 500 + подовження боку, що торкається краю
+    expect(flushDx).toBeLessThan(-500);
+    // піввисота 40 + (500 * tan30 + 2) проти кутової дірки зверху
+    expect(flushDy).toBeLessThan(-300);
+
+    const mid = buildFilterGraph({
+      meta: { width: 1000, height: 800, duration: 10 },
+      crop: { t: 0, b: 0, l: 0, r: 0 },
+      elements: [
+        { type: 'rect', x: 40, y: 40, w: 20, h: 10, rotation: 30, startTime: 0, endTime: 5, color: '#000000' }
+      ],
+      segments: [{ start: 0, end: 5 }]
+    });
+    const [midDx, midDy] = gtBounds(mid.graph);
+    // фігура в середині кадру — без подовжень, рівно піврозміри
+    expect(midDx).toBeCloseTo(-100);
+    expect(midDy).toBeCloseTo(-40);
+  });
 });
 

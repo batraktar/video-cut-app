@@ -154,7 +154,7 @@ export const buildFfmpegLinesFor = (video, edit, options = {}) => {
 
   return {
     lines: [
-      `ffmpeg ${overwriteFlag}-i "${inputPath}" -filter_complex "${graph}" -map "[${outputLabel}]" -an -c:v libx264 -crf 18 -preset slow -movflags +faststart "${outputPath}"`,
+      `ffmpeg ${overwriteFlag}-i "${inputPath}" -filter_complex "${graph}" -map "[${outputLabel}]" -an -c:v libx264 -crf 23 -preset veryfast -movflags +faststart "${outputPath}"`,
       ...(rcloneLine ? [rcloneLine] : []),
       ...(includeRenameLine && renameLine ? [renameLine] : [])
     ],
